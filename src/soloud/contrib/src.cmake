@@ -226,6 +226,15 @@ if (SOLOUD_BACKEND_XAUDIO2)
 	)
 endif()
 
+if (SOLOUD_BACKEND_MINIAUDIO)
+	add_definitions (-DWITH_MINIAUDIO)
+
+	set (BACKENDS_SOURCES
+			${BACKENDS_SOURCES}
+			${BACKENDS_PATH}/miniaudio/soloud_miniaudio.cpp
+	)
+endif()
+
 if (SOLOUD_BACKEND_WINMM)
 	add_definitions (-DWITH_WINMM)
 
