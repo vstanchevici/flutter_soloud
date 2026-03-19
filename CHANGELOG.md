@@ -1,4 +1,9 @@
-#### 3.5.X (XX Mar 2026)
+#### 3.5.2 (18 Mar 2026)
+- fix: wire miniaudio backend pause/resume to stop AudioUnit on iOS #406. Thanks to @sbauly
+- updated audio_context example to demostrate how to integrate with `audio_session` and `audio_service`
+
+#### 3.5.1 (14 Mar 2026)
+- `getStreamTimeConsumed` return wrong time for s16le and s8 #419
 - win fix: hang on app exit #413
 - win fix: prevent Windows message pump goes irresponsive with plugins like `desktop_drop` and maybe others #401
 - fix: only unpause when buffer covers playback position #393. Thanks to @nukes
