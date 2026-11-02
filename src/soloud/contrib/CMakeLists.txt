@@ -1,4 +1,4 @@
-cmake_minimum_required (VERSION 2.8)
+cmake_minimum_required (VERSION 3.10)
 
 project (SoLoud)
 
@@ -7,6 +7,9 @@ set (CMAKE_POSITION_INDEPENDENT_CODE ON)
 #INCLUDE (StandartIncludes)
 
 include_directories (../include)
+
+# dr_mp3's implementation normally lives in the Flutter plugin (mp3_stream_decoder.cpp)
+add_definitions (-DSOLOUD_DR_MP3_IMPLEMENTATION)
 
 include (Configure.cmake)
 #INCLUDE (InstallIncludes.cmake)
