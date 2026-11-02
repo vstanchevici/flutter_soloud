@@ -101,8 +101,23 @@ enum PlayerErrors {
   /// Audio format not supported
   audioFormatNotSupported(29),
 
-  /// Opus ogg vorbis libraries not found.
-  opusOggVorbisLibsNotFound(30);
+  /// Xiph libraries not found.
+  xiphLibsNotFound(30),
+
+  /// Bus id not found.
+  busIdNotFound(31),
+
+  /// Given hash doesn't belong to a pull buffer stream.
+  hashIsNotAPullBufferStream(32),
+
+  /// The pull buffer stream is in an invalid state for this operation.
+  invalidPullBufferState(33),
+
+  /// The output audio device could not be started or resumed.
+  audioDeviceFailedToStart(34),
+
+  /// SoLoud didn't return a valid voice handle when starting the playback.
+  failedToStartPlayback(35);
 
   const PlayerErrors(this.value);
 
@@ -172,9 +187,9 @@ enum PlayerErrors {
             'capacity, in this case the stream is automatically marked to be '
             'ended.';
       case PlayerErrors.failedToCreateOpusDecoder:
-        return 'Failed to create Opus decoder.';
+        return 'Failed to create audio decoder.';
       case PlayerErrors.failedToDecodeOpusPacket:
-        return 'Failed to decode Opus packet.';
+        return 'Failed to decode audio packet.';
       case PlayerErrors.bufferStreamCanBePlayedOnlyOnce:
         return 'BufferStream can be played only once when using '
             '`BufferingType.release` buffer type!';
@@ -192,11 +207,23 @@ enum PlayerErrors {
       case PlayerErrors.audioFormatNotSupported:
         return 'Audio format not supported. Please check the audio file format '
             'and ensure it is supported by the player.';
-      case PlayerErrors.opusOggVorbisLibsNotFound:
-        return 'Opus Ogg Vorbis libraries not found. Please check the '
+      case PlayerErrors.xiphLibsNotFound:
+        return 'Xiph libraries not found. Please check the '
             'installation and ensure the required libraries are available. '
             'Ref:'
-            'https://github.com/alnitak/flutter_soloud/blob/main/NO_OPUS_OGG_LIBS.md';
+            'https://docs.page/alnitak/flutter_soloud_docs/get_started/no_xiph_libs';
+      case PlayerErrors.busIdNotFound:
+        return 'Bus id not found!';
+      case PlayerErrors.hashIsNotAPullBufferStream:
+        return "Given hash doesn't belong to a pull buffer stream.";
+      case PlayerErrors.invalidPullBufferState:
+        return 'The pull buffer stream is in an invalid state for this '
+            'operation.';
+      case PlayerErrors.audioDeviceFailedToStart:
+        return 'The output audio device could not be started or resumed!';
+      case PlayerErrors.failedToStartPlayback:
+        return 'Failed to start the playback. The audio engine could not '
+            'create a valid voice for this sound.';
     }
   }
 
@@ -231,13 +258,13 @@ enum ReadSamplesErrors {
 
   /// Returns a [ReadSamplesErrors] from a [value].
   static ReadSamplesErrors fromValue(int value) => switch (value) {
-        0 => readSamplesNoError,
-        1 => noBackend,
-        2 => failedToGetDataFormat,
-        3 => failedToSeekPcm,
-        4 => failedToReadPcmFrames,
-        _ => throw ArgumentError('Unknown value for ReadSamplesErrors: $value'),
-      };
+    0 => readSamplesNoError,
+    1 => noBackend,
+    2 => failedToGetDataFormat,
+    3 => failedToSeekPcm,
+    4 => failedToReadPcmFrames,
+    _ => throw ArgumentError('Unknown value for ReadSamplesErrors: $value'),
+  };
 
   /// Returns a human-friendly sentence describing the error.
   String get _asSentence {
@@ -297,14 +324,19 @@ enum LoadMode {
 
   /// Keep the file on disk and only load chunks as needed.
   /// More CPU, less memory allocated, seeking lags with MP3s.
+  ///
+  /// Formats decoded by the platform's native decoder (M4A, MP4, AAC, AC-3,
+  /// E-AC-3) cannot be streamed from disk: they are fully decoded to PCM in
+  /// memory when loaded, exactly like [memory].
   disk,
 }
 
 /// Audio state changes. These notifications are sent when the OS reports
 /// audio device state changes. The [interruptionBegan] and [interruptionEnded]
-/// events are now handled automatically by the plugin to pause and resume
-/// the audio device. You can listen to these events if you need to update
-/// your UI or perform additional actions.
+/// events are handled automatically by the output-device lifecycle
+/// coordinator. Interruption end restarts the device only when active playback
+/// requires it or the idle timeout is disabled. You can listen to these events
+/// if you need to update your UI or perform additional actions.
 ///
 /// Note: Notifications should work on iOS but not all Android backends will
 /// report this notification. However the started and stopped events should
@@ -320,15 +352,77 @@ enum PlayerStateNotification {
   rerouted,
 
   /// An audio interruption has begun (e.g., incoming call, Siri).
-  /// The plugin automatically pauses the audio device when this occurs.
+  /// The plugin safely stops the audio device without mutating voice state.
   interruptionBegan,
 
   /// An audio interruption has ended.
-  /// The plugin automatically resumes the audio device when this occurs.
+  /// The plugin restarts the device when active playback requires it or
+  /// indefinite keep-alive is configured.
   interruptionEnded,
 
   /// The audio session is unlocked and ready for use.
   unlocked,
+
+  /// An automatic output-device start failed, after the backend had already
+  /// rebuilt the device and retried.
+  ///
+  /// Unlike the OS-sourced notifications above, this one is emitted by the
+  /// plugin's own lifecycle scheduler and is reliable on every backend. It is
+  /// surfaced publicly as `SoLoud.audioDeviceStartFailures`.
+  audioDeviceStartFailed,
+}
+
+/// Why an automatic output-device start failed.
+///
+/// Delivered by `SoLoud.audioDeviceStartFailures`.
+enum AudioDeviceStartFailure {
+  /// The backend could not start the output device, even after rebuilding it
+  /// against the current default output.
+  ///
+  /// Playback state is untouched: voices remain valid and unpaused, so audio
+  /// resumes if the device can later be started (for example by awaiting
+  /// `SoLoud.startAudioDevice`).
+  deviceUnavailable,
+}
+
+/// The state of the audio output device, as reported by
+/// `SoLoud.getAudioDeviceState`.
+///
+/// The values mirror miniaudio's actual `ma_device_state`; they do not describe
+/// lifecycle scheduler intent or a pending operation.
+///
+/// WARNING: Keep these in sync with `src/enums.h`.
+enum AudioDeviceState {
+  /// The device is uninitialized. Also returned before the engine is
+  /// initialized or after it has been deinitialized.
+  uninitialized(0),
+
+  /// The device exists but is currently stopped, for example after the engine
+  /// has remained idle for its configured timeout.
+  stopped(1),
+
+  /// The device is started and is requesting and/or delivering audio data.
+  started(2),
+
+  /// The device is transitioning from a stopped state to a started state.
+  starting(3),
+
+  /// The device is transitioning from a started state to a stopped state.
+  stopping(4);
+
+  const AudioDeviceState(this.value);
+
+  /// Returns the [AudioDeviceState] for the given native integer [value],
+  /// falling back to [uninitialized] for any unknown value.
+  factory AudioDeviceState.fromValue(int value) {
+    return AudioDeviceState.values.firstWhere(
+      (state) => state.value == value,
+      orElse: () => AudioDeviceState.uninitialized,
+    );
+  }
+
+  /// The native integer value of the state.
+  final int value;
 }
 
 /// The channels to be used while initializing the player.
@@ -387,13 +481,9 @@ enum BufferType {
   /// 32-bit signed, little-endian.
   s32le(3),
 
-  /// Auto detect the type from  MP3, OGG Opus or OGG Vorbis formats.
-  auto(4),
-
-  /// Opus encoded audio.
-  /// `opus` is deprecated, use `auto` instead which will automatically
-  /// determine from MP3, OGG Opus or OGG Vorbis.
-  opus(5);
+  /// Auto detect the audio format (e.g. MP3, OGG Opus, OGG Vorbis, WAV, FLAC,
+  /// AAC, AC-3, E-AC-3).
+  auto(4);
 
   /// The integer value of the PCM type.
   final int value;
@@ -414,19 +504,170 @@ enum BufferType {
         return 'Little Endian Signed 32-bit';
       case BufferType.f32le:
         return 'Little Endian Float 32-bit';
-      case BufferType.opus:
-        return 'Opus Encoded Audio';
       case BufferType.auto:
-        return 'MP3, Opus or Vorbis Encoded Audio';
+        return 'Auto Detect Audio Format';
+    }
+  }
+}
+
+/// The output format for mixer capture.
+///
+/// WARNING: Keep these in sync with `src/enums.h`.
+enum MixerOutputFormat {
+  /// 32-bit floating point, little-endian.
+  pcmF32le(0),
+
+  /// 8-bit signed, little-endian.
+  pcmS8(1),
+
+  /// 16-bit signed, little-endian.
+  pcmS16le(2),
+
+  /// 32-bit signed, little-endian.
+  pcmS32le(3),
+
+  /// Opus encoded audio.
+  opus(4),
+
+  /// Vorbis encoded audio.
+  vorbis(5),
+
+  /// FLAC encoded audio.
+  flac(6),
+
+  /// WAV encoded audio (16-bit PCM in a RIFF/WAVE container).
+  wav(7);
+
+  /// The integer value of the format.
+  final int value;
+
+  /// Constructs a valid mixer output format with [value].
+  // ignore: sort_constructors_first
+  const MixerOutputFormat(this.value);
+
+  /// Whether this is a PCM (uncompressed) format.
+  bool get isPcm =>
+      this == MixerOutputFormat.pcmF32le ||
+      this == MixerOutputFormat.pcmS8 ||
+      this == MixerOutputFormat.pcmS16le ||
+      this == MixerOutputFormat.pcmS32le;
+
+  /// The number of bytes per sample for this format, or 0 for compressed
+  /// formats.
+  int get bytesPerSample {
+    switch (this) {
+      case MixerOutputFormat.pcmF32le:
+        return 4;
+      case MixerOutputFormat.pcmS8:
+        return 1;
+      case MixerOutputFormat.pcmS16le:
+        return 2;
+      case MixerOutputFormat.pcmS32le:
+        return 4;
+      case MixerOutputFormat.opus:
+      case MixerOutputFormat.vorbis:
+      case MixerOutputFormat.flac:
+      case MixerOutputFormat.wav:
+        return 0;
+    }
+  }
+
+  /// The number of bytes per frame for a given channel count.
+  ///
+  /// Returns 0 for compressed formats.
+  int bytesPerFrame(int channels) => bytesPerSample * channels;
+
+  /// Returns a human-friendly format name.
+  @override
+  String toString() {
+    switch (this) {
+      case MixerOutputFormat.pcmF32le:
+        return 'PCM F32LE';
+      case MixerOutputFormat.pcmS8:
+        return 'PCM S8';
+      case MixerOutputFormat.pcmS16le:
+        return 'PCM S16LE';
+      case MixerOutputFormat.pcmS32le:
+        return 'PCM S32LE';
+      case MixerOutputFormat.opus:
+        return 'Opus';
+      case MixerOutputFormat.vorbis:
+        return 'Vorbis';
+      case MixerOutputFormat.flac:
+        return 'FLAC';
+      case MixerOutputFormat.wav:
+        return 'WAV';
     }
   }
 }
 
 /// How the buffering should work when using the BufferStream.
 enum BufferingType {
-  /// Preserve the data already in the buffer while adding new data.
+  /// Preserve the data already in the buffer while playing it.
   preserved,
 
   /// Release the data in the buffer while playing it.
-  released
+  released,
+}
+
+/// The kind of visualization data to acquire.
+///
+/// WARNING: Keep these in sync with `src/enums.h`.
+enum VisualizationKind {
+  /// Time-domain wave data only.
+  wave(0),
+
+  /// Frequency-domain FFT data only.
+  fft(1),
+
+  /// Both wave and FFT data.
+  waveAndFft(2);
+
+  const VisualizationKind(this.value);
+
+  /// The integer value representing the enum in native code.
+  final int value;
+}
+
+/// Channel selection constants for audio visualization.
+abstract final class VisualizationChannel {
+  /// Average all channels into a single mono stream, as miniaudio downmixes
+  /// to mono.
+  static const int merged = -1;
+
+  /// Process and emit separate visualization data for each active channel
+  /// (e.g. Left and Right for stereo).
+  static const int all = -2;
+}
+
+/// Linux audio backends.
+///
+/// WARNING: Keep these in sync with `src/enums.h`.
+enum LinuxAudioBackend {
+  /// Let miniaudio choose the default backend (ALSA first, then PulseAudio,
+  /// then JACK).
+  auto(0),
+
+  /// Advanced Linux Sound Architecture (ALSA).
+  alsa(1),
+
+  /// PulseAudio sound server.
+  pulseAudio(2),
+
+  /// JACK Audio Connection Kit.
+  jack(3);
+
+  const LinuxAudioBackend(this.value);
+
+  /// The integer value representing the enum in native code.
+  final int value;
+
+  /// Returns the [LinuxAudioBackend] corresponding to [value].
+  static LinuxAudioBackend fromValue(int value) => switch (value) {
+    0 => auto,
+    1 => alsa,
+    2 => pulseAudio,
+    3 => jack,
+    _ => auto,
+  };
 }

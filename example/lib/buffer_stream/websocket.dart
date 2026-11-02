@@ -3,6 +3,7 @@
 import 'dart:async';
 import 'dart:developer' as dev;
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -75,11 +76,39 @@ class _WebsocketExampleState extends State<WebsocketExample> {
   int byteSize = 0;
   final streamBuffering = ValueNotifier(false);
   final bufferingType = ValueNotifier(BufferingType.preserved);
+  Timer? _timer;
+  StreamSubscription<dynamic>? _subscription;
+  final pause = ValueNotifier<bool>(true);
+  final position = ValueNotifier<double>(0);
+  final lenght = ValueNotifier<double>(0);
 
   @override
   void dispose() {
+    _timer?.cancel();
+    _subscription?.cancel();
     SoLoud.instance.deinit();
     super.dispose();
+  }
+
+  void startTimer() {
+    _timer?.cancel();
+    _timer = Timer.periodic(const Duration(milliseconds: 20), (timer) {
+      if (currentSound == null) {
+        _timer?.cancel();
+        setState(() {});
+        return;
+      }
+      lenght.value =
+          SoLoud.instance.getLength(currentSound!).inMilliseconds.toDouble();
+      if (handle != null && SoLoud.instance.getIsValidVoiceHandle(handle!)) {
+        position.value =
+            SoLoud.instance.getPosition(handle!).inMilliseconds.toDouble();
+      }
+    });
+  }
+
+  void stopTimer() {
+    _timer?.cancel();
   }
 
   @override
@@ -189,12 +218,17 @@ class _WebsocketExampleState extends State<WebsocketExample> {
             OutlinedButton(
               onPressed: () async {
                 await channel?.sink.close();
+                await _subscription?.cancel();
+                _subscription = null;
                 await SoLoud.instance.disposeAllSources();
+                handle = null;
+                numberOfChunks = 0;
+                byteSize = 0;
                 streamBuffering.value = false;
 
                 currentSound = SoLoud.instance.setBufferStream(
                   maxBufferSizeBytes: 1024 * 1024 * 200, // 200 MB
-                  bufferingTimeNeeds: 1.5,
+                  bufferingTimeNeeds: 3,
                   sampleRate: sampleRate[srId],
                   channels: Channels.values[chId],
                   format: BufferType.values[fmtId],
@@ -205,7 +239,7 @@ class _WebsocketExampleState extends State<WebsocketExample> {
                         'handle: $handle at time $time');
                     if (context.mounted) {
                       setState(() {
-                        streamBuffering.value = !streamBuffering.value;
+                        streamBuffering.value = isBuffering;
                       });
                     }
                   },
@@ -230,6 +264,12 @@ class _WebsocketExampleState extends State<WebsocketExample> {
                   return;
                 }
 
+                await _subscription?.cancel();
+                _subscription = null;
+                handle = null;
+                numberOfChunks = 0;
+                byteSize = 0;
+
                 /// Connect to the websocket
                 final wsUrl = Uri.parse(websocketUri);
                 channel = WebSocketChannel.connect(wsUrl);
@@ -243,28 +283,66 @@ class _WebsocketExampleState extends State<WebsocketExample> {
                   debugPrint(e.toString());
                 }
 
+                final chunkBuffer = BytesBuilder(copy: false);
+                var lastFlush = DateTime.now();
+
                 /// Listen to the websocket
-                channel?.stream.listen(
+                _subscription = channel?.stream.listen(
                   (message) async {
+                    final chunk = message as List<int>;
                     numberOfChunks++;
-                    byteSize += (message as List<int>).length;
+                    byteSize += chunk.length;
+                    chunkBuffer.add(chunk);
 
-                    try {
-                      SoLoud.instance.addAudioDataStream(
-                        currentSound!,
-                        Uint8List.fromList(message),
-                      );
-                    } on Exception catch (e) {
-                      debugPrint('error adding audio data: $e');
-                      await channel?.sink.close();
-                    }
+                    final now = DateTime.now();
+                    final shouldFlush = numberOfChunks == 1 ||
+                        chunkBuffer.length >= 16 * 1024 ||
+                        now.difference(lastFlush).inMilliseconds >= 100;
 
-                    // start playing at first audio chunk received
-                    if (numberOfChunks == 1) {
-                      handle = await SoLoud.instance.play(currentSound!);
+                    if (shouldFlush && chunkBuffer.isNotEmpty) {
+                      final bytes = chunkBuffer.takeBytes();
+                      lastFlush = now;
+                      try {
+                        SoLoud.instance.addAudioDataStream(
+                          currentSound!,
+                          bytes,
+                        );
+                      } on Exception catch (e) {
+                        debugPrint('error adding audio data: $e');
+                        await channel?.sink.close();
+                      }
+
+                      // start playing at first audio chunk received
+                      if (numberOfChunks == 1 ||
+                          handle == null ||
+                          !SoLoud.instance.getIsValidVoiceHandle(handle!)) {
+                        handle = SoLoud.instance.play(currentSound!);
+                      }
+
+                      // When receiving high-speed unthrottled chunks, pause
+                      // the subscription and yield a frame so the UI renders.
+                      if (bytes.length >= 16 * 1024) {
+                        _subscription?.pause();
+                        await Future<void>.delayed(Duration.zero);
+                        _subscription?.resume();
+                      }
                     }
                   },
-                  onDone: () {
+                  onDone: () async {
+                    if (chunkBuffer.isNotEmpty && currentSound != null) {
+                      final bytes = chunkBuffer.takeBytes();
+                      try {
+                        SoLoud.instance.addAudioDataStream(
+                          currentSound!,
+                          bytes,
+                        );
+                      } on Exception catch (e) {
+                        debugPrint('error adding remaining audio data: $e');
+                      }
+                    }
+                    // Yield before calling setDataIsEnded to let any pending UI
+                    // updates finish.
+                    await Future<void>.delayed(Duration.zero);
                     if (currentSound != null) {
                       SoLoud.instance.setDataIsEnded(currentSound!);
                     }
@@ -277,32 +355,16 @@ class _WebsocketExampleState extends State<WebsocketExample> {
                     debugPrint('ws error: $error');
                   },
                 );
+                startTimer();
               },
               child: const Text('connect to WS and receive audio data'),
             ),
             const SizedBox(height: 16),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
+            Wrap(
+              alignment: WrapAlignment.center,
+              spacing: 8,
+              runSpacing: 8,
               children: [
-                OutlinedButton(
-                  onPressed: () async {
-                    if (currentSound == null) return;
-                    handle = await SoLoud.instance.play(
-                      currentSound!,
-                      volume: 0.6,
-                      // looping: true,
-                    );
-                    Timer.periodic(const Duration(milliseconds: 1000), (timer) {
-                      if (currentSound == null ||
-                          SoLoud.instance.getIsValidVoiceHandle(handle!) ==
-                              false) {
-                        timer.cancel();
-                        setState(() {});
-                      }
-                    });
-                  },
-                  child: const Text('play'),
-                ),
                 OutlinedButton(
                   onPressed: () async {
                     if (currentSound == null) return;
@@ -321,6 +383,11 @@ class _WebsocketExampleState extends State<WebsocketExample> {
                 OutlinedButton(
                   onPressed: () async {
                     currentSound = null;
+                    handle = null;
+                    numberOfChunks = 0;
+                    byteSize = 0;
+                    await _subscription?.cancel();
+                    _subscription = null;
                     await SoLoud.instance.disposeAllSources();
                     await channel?.sink.close();
                     streamBuffering.value = false;

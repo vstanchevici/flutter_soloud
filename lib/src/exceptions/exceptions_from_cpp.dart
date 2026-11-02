@@ -11,7 +11,8 @@ class SoLoudInvalidParameterException extends SoLoudCppException {
   const SoLoudInvalidParameterException([super.message]);
 
   @override
-  String get description => 'An invalid parameter was passed to SoLoud '
+  String get description =>
+      'An invalid parameter was passed to SoLoud '
       '(on the C++ side).';
 }
 
@@ -31,9 +32,10 @@ class SoLoudFileLoadFailedException extends SoLoudCppException {
   const SoLoudFileLoadFailedException([super.message]);
 
   @override
-  String get description => 'File found, but could not be loaded! '
-      'Could be a permission error or the file is corrupted. '
-      '(on the C++ side).';
+  String get description =>
+      'File found, but could not be loaded! '
+      'Could be a permission error, or the file is corrupted, '
+      'or the format is not supported. (on the C++ side).';
 }
 
 // Note: PlayerErrors.fileAlreadyLoaded is not thrown as an exception.
@@ -83,7 +85,8 @@ class SoLoudNullPointerException extends SoLoudCppException {
   const SoLoudNullPointerException([super.message]);
 
   @override
-  String get description => 'A null pointer was captured on the C++ side. '
+  String get description =>
+      'A null pointer was captured on the C++ side. '
       'This could happen when passing a non '
       'initialized pointer (with calloc()) to retrieve FFT or wave data. '
       'Or, setVisualization has not been enabled.';
@@ -96,7 +99,8 @@ class SoLoudSoundHashNotFoundCppException extends SoLoudCppException {
   const SoLoudSoundHashNotFoundCppException([super.message]);
 
   @override
-  String get description => 'The sound with specified hash is not found '
+  String get description =>
+      'The sound with specified hash is not found '
       '(on the C++ side).';
 }
 
@@ -126,7 +130,8 @@ class SoLoudVisualizationNotEnabledException extends SoLoudCppException {
   const SoLoudVisualizationNotEnabledException([super.message]);
 
   @override
-  String get description => 'Asking for audio data is not enabled '
+  String get description =>
+      'Asking for audio data is not enabled '
       '(on the C++ side). '
       'Please use `setVisualizationEnabled(true);` to enable.';
 }
@@ -138,7 +143,8 @@ class SoLoudMaxFilterNumberReachedException extends SoLoudCppException {
   const SoLoudMaxFilterNumberReachedException([super.message]);
 
   @override
-  String get description => 'Askind to add another filter, but no more then 8 '
+  String get description =>
+      'Askind to add another filter, but no more then 8 '
       'is allowed (on the C++ side).';
 }
 
@@ -149,7 +155,8 @@ class SoLoudFilterAlreadyAddedException extends SoLoudCppException {
   const SoLoudFilterAlreadyAddedException([super.message]);
 
   @override
-  String get description => 'Asking to add a filter that has '
+  String get description =>
+      'Asking to add a filter that has '
       'already been added. Only one of each type is allowed (on the C++ side).';
 }
 
@@ -160,7 +167,8 @@ class SoLoudPlayerAlreadyInitializedException extends SoLoudCppException {
   const SoLoudPlayerAlreadyInitializedException([super.message]);
 
   @override
-  String get description => 'The player has already been initialized '
+  String get description =>
+      'The player has already been initialized '
       '(on the C++ side).';
 }
 
@@ -173,7 +181,8 @@ class SoLoudSoundHandleNotFoundCppException extends SoLoudCppException {
   const SoLoudSoundHandleNotFoundCppException([super.message]);
 
   @override
-  String get description => 'The sound handle is not found '
+  String get description =>
+      'The sound handle is not found '
       '(on the C++ side).';
 }
 
@@ -183,7 +192,8 @@ class SoLoudFilterParameterGetErrorCppException extends SoLoudCppException {
   const SoLoudFilterParameterGetErrorCppException([super.message]);
 
   @override
-  String get description => 'An error occurred while getting a filter '
+  String get description =>
+      'An error occurred while getting a filter '
       'parameter. This could happen when passing a value outside the parameter '
       'range and then trying to get it '
       '(on the C++ side).';
@@ -195,11 +205,12 @@ class SoLoudReadSamplesNoBackendCppException extends SoLoudCppException {
   const SoLoudReadSamplesNoBackendCppException([super.message]);
 
   @override
-  String get description => 'An error occurred while initializing the '
+  String get description =>
+      'An error occurred while initializing the '
       'backend to read samples. Probably for an unsupported or broken format. '
       'If you are trying to open an OGG file, please make sure that you have '
-      'unset NO_OPUS_OGG_LIBS environment variable. Ref: '
-      'https://docs.page/alnitak/flutter_soloud_docs/get_started/no_opus_ogg_libs  '
+      'unset NO_XIPH_LIBS environment variable. Ref: '
+      'https://docs.page/alnitak/flutter_soloud_docs/get_started/no_xiph_libs  '
       '(on the C++ side).';
 }
 
@@ -210,7 +221,8 @@ class SoLoudReadSamplesFailedToGetDataFormatCppException
   const SoLoudReadSamplesFailedToGetDataFormatCppException([super.message]);
 
   @override
-  String get description => 'An error occurred while reading the decoder '
+  String get description =>
+      'An error occurred while reading the decoder '
       'data format. Probably for an unsupported or broken format.'
       ' (on the C++ side).';
 }
@@ -221,7 +233,8 @@ class SoLoudReadSamplesFailedToSeekPcmCppException extends SoLoudCppException {
   const SoLoudReadSamplesFailedToSeekPcmCppException([super.message]);
 
   @override
-  String get description => 'An error occurred while seeking audio data. '
+  String get description =>
+      'An error occurred while seeking audio data. '
       '(on the C++ side).';
 }
 
@@ -232,7 +245,8 @@ class SoLoudReadSamplesFailedToReadPcmFramesCppException
   const SoLoudReadSamplesFailedToReadPcmFramesCppException([super.message]);
 
   @override
-  String get description => 'An error occurred while reading PCM frames. '
+  String get description =>
+      'An error occurred while reading PCM frames. '
       '(on the C++ side).';
 }
 
@@ -242,7 +256,8 @@ class SoLoudNoPlaybackDevicesFoundCppException extends SoLoudCppException {
   const SoLoudNoPlaybackDevicesFoundCppException([super.message]);
 
   @override
-  String get description => 'No playback devices were found while '
+  String get description =>
+      'No playback devices were found while '
       'initializing engine or when changing the output device. '
       '(on the C++ side).';
 }
@@ -269,7 +284,8 @@ class SoLoudHashIsNotABufferStreamCppException extends SoLoudCppException {
   const SoLoudHashIsNotABufferStreamCppException([super.message]);
 
   @override
-  String get description => 'The given AudioSource is not a buffer stream. '
+  String get description =>
+      'The given AudioSource is not a buffer stream. '
       '(on the C++ side).';
 }
 
@@ -288,19 +304,19 @@ class SoLoudStreamEndedAlreadyCppException extends SoLoudCppException {
       '(on the C++ side).';
 }
 
-/// An error occurred while creating an Opus decoder.
+/// An error occurred while creating an audio decoder.
 class SoLoudFailedToCreateDecoderCppException extends SoLoudCppException {
   /// Creates a new [SoLoudFailedToCreateDecoderCppException].
   const SoLoudFailedToCreateDecoderCppException([super.message]);
 
   @override
   String get description =>
-      'Failed to create decoder. This could happen when some internal '
-      'error occurred while creating the decoder. Maybe not enough memory or '
-      'maybe the data is corrupted. (on the C++ side).';
+      'Failed to create audio decoder. The format may not be supported on '
+      'this platform, or an internal error occurred while initializing '
+      'the decoder. (on the C++ side).';
 }
 
-/// An error occurred while decoding Opus data.
+/// An error occurred while decoding audio data packet.
 /// This could happen when the data is corrupted.
 class SoLoudFailedToDecodeOpusPacketCppException extends SoLoudCppException {
   /// Creates a new [SoLoudFailedToDecodeOpusPacketCppException].
@@ -308,8 +324,8 @@ class SoLoudFailedToDecodeOpusPacketCppException extends SoLoudCppException {
 
   @override
   String get description =>
-      'Failed to decode Opus data. This could happen when the data is '
-      'corrupted. (on the C++ side).';
+      'Failed to decode audio data packet. This could happen when the data is '
+      'corrupted or truncated. (on the C++ side).';
 }
 
 /// The buffer stream can be played only once when using `release` buffer type.
@@ -319,7 +335,8 @@ class SoLoudBufferStreamCanBePlayedOnlyOnceCppException
   const SoLoudBufferStreamCanBePlayedOnlyOnceCppException([super.message]);
 
   @override
-  String get description => 'The buffer stream can be played only once when '
+  String get description =>
+      'The buffer stream can be played only once when '
       'using `BufferingType.release` buffer type. (on the C++ side).';
 }
 
@@ -332,7 +349,8 @@ class SoLoudWrongBufferTypeToAskForTimeConsumedCppException
   const SoLoudWrongBufferTypeToAskForTimeConsumedCppException([super.message]);
 
   @override
-  String get description => 'The buffer type is not suitable for asking '
+  String get description =>
+      'The buffer type is not suitable for asking '
       'for time consumed. Please use a buffer of type '
       '`BufferingType.released`. (on the C++ side).';
 }
@@ -347,7 +365,8 @@ class SoLoudBufferStreamWithReleasedBufferTypeCannotBeSeekedCppException
   ]);
 
   @override
-  String get description => 'The buffer stream with released buffer type '
+  String get description =>
+      'The buffer stream with released buffer type '
       'cannot be seeked. (on the C++ side).';
 }
 
@@ -357,21 +376,77 @@ class SoLoudAudioFormatNotSupportedCppException extends SoLoudCppException {
   const SoLoudAudioFormatNotSupportedCppException([super.message]);
 
   @override
-  String get description => 'Audio format not supported. Please check the '
+  String get description =>
+      'Audio format not supported. Please check the '
       'audio file format and ensure it is supported by the player. '
       '(on the C++ side).';
 }
 
 /// An error occurred while trying to initialize an audio decoder.
-class SoLoudOpusOggVorbisLibsNotFoundCppException extends SoLoudCppException {
-  /// Creates a new [SoLoudOpusOggVorbisLibsNotFoundCppException].
-  const SoLoudOpusOggVorbisLibsNotFoundCppException([super.message]);
+class SoLoudXiphLibsNotFoundCppException extends SoLoudCppException {
+  /// Creates a new [SoLoudXiphLibsNotFoundCppException].
+  const SoLoudXiphLibsNotFoundCppException([super.message]);
 
   @override
-  String get description => 'An error occurred while trying to initialize an '
+  String get description =>
+      'An error occurred while trying to initialize an '
       'audio decoder. Probably for an unsupported or broken format. '
       'If you are trying to open an OGG/OPUS/VORBIS stream, please make sure '
-      'that you have unset NO_OPUS_OGG_LIBS environment variable. Ref: '
-      'https://docs.page/alnitak/flutter_soloud_docs/get_started/no_opus_ogg_libs  '
+      'that you have unset NO_XIPH_LIBS environment variable. Ref: '
+      'https://docs.page/alnitak/flutter_soloud_docs/get_started/no_xiph_libs  '
       '(on the C++ side).';
+}
+
+/// Bus id not found.
+class SoLoudBusIdNotFoundCppException extends SoLoudCppException {
+  /// Creates a new [SoLoudBusIdNotFoundCppException].
+  const SoLoudBusIdNotFoundCppException([super.message]);
+
+  @override
+  String get description => 'Bus id not found! (on the C++ side).';
+}
+
+/// Given hash doesn't belong to a pull buffer stream.
+class SoLoudHashIsNotAPullBufferStreamCppException extends SoLoudCppException {
+  /// Creates a new [SoLoudHashIsNotAPullBufferStreamCppException].
+  const SoLoudHashIsNotAPullBufferStreamCppException([super.message]);
+
+  @override
+  String get description =>
+      "The given hash doesn't belong to a pull buffer stream. "
+      '(on the C++ side).';
+}
+
+/// The pull buffer stream is in an invalid state for this operation.
+class SoLoudInvalidPullBufferStateCppException extends SoLoudCppException {
+  /// Creates a new [SoLoudInvalidPullBufferStateCppException].
+  const SoLoudInvalidPullBufferStateCppException([super.message]);
+
+  @override
+  String get description =>
+      'The pull buffer stream is in an invalid state for this operation. '
+      '(on the C++ side).';
+}
+
+/// The output audio device could not be started or resumed.
+class SoLoudAudioDeviceFailedToStartCppException extends SoLoudCppException {
+  /// Creates a new [SoLoudAudioDeviceFailedToStartCppException].
+  const SoLoudAudioDeviceFailedToStartCppException([super.message]);
+
+  @override
+  String get description =>
+      'The output audio device could not be started or resumed. The audio '
+      'session may have been taken over by another app, the device may have '
+      'been unplugged, or the OS denied the request. (on the C++ side).';
+}
+
+/// SoLoud didn't return a valid voice handle when starting the playback.
+class SoLoudFailedToStartPlaybackCppException extends SoLoudCppException {
+  /// Creates a new [SoLoudFailedToStartPlaybackCppException].
+  const SoLoudFailedToStartPlaybackCppException([super.message]);
+
+  @override
+  String get description =>
+      'Failed to start the playback. The audio engine could not create a '
+      'valid voice for this sound. (on the C++ side).';
 }

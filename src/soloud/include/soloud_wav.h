@@ -27,8 +27,6 @@ freely, subject to the following restrictions:
 
 #include "soloud.h"
 
-struct stb_vorbis;
-
 namespace SoLoud
 {
 	class Wav;
@@ -45,6 +43,11 @@ namespace SoLoud
 		virtual result rewind();
 		virtual result seek(double aSeconds, float* mScratch, unsigned int mScratchSize);
 		virtual bool hasEnded();
+		// ###### flutter_soloud local patch (retroactive re-mix) ######
+		// The wav data is fully decoded in memory, so the consumption state is
+		// exactly mOffset; snapshot/restore make the source re-mixable.
+		virtual SourceStateSnapshot *captureSourceState();
+		virtual void restoreSourceState(SourceStateSnapshot *aState);
 	};
 
 	class Wav : public AudioSource
@@ -53,10 +56,13 @@ namespace SoLoud
 		result loadogg(MemoryFile *aReader);
 		result loadmp3(MemoryFile *aReader);
 		result loadflac(MemoryFile *aReader);
+		result loadnative(MemoryFile *aReader);
+		result loadnativefile(const char *aFilename);
 		result testAndLoadFile(MemoryFile *aReader);
 	public:
 		float *mData;
 		unsigned int mSampleCount;
+		unsigned int mActualSampleCount; // Actual decoded samples (may differ from mSampleCount for OGG)
 
 		Wav();
 		virtual ~Wav();

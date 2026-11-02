@@ -11,8 +11,8 @@ set REPO_OPUS=https://github.com/xiph/opus
 set REPO_VORBIS=https://github.com/xiph/vorbis
 set REPO_FLAC=https://github.com/xiph/flac
 set BUILD_DIR=%BASE_DIR%\\windows\\build
-set LIBS_DIR=%BASE_DIR%\..\windows\libs
-set INCLUDE_DIR=%BASE_DIR%\..\windows\include
+set LIBS_DIR=%BASE_DIR%\prebuild\windows
+set INCLUDE_DIR=%BASE_DIR%\prebuild\include
 set OGG_DIR=%BASE_DIR%\\ogg
 set OPUS_DIR=%BASE_DIR%\\opus
 set VORBIS_DIR=%BASE_DIR%\\vorbis
@@ -160,11 +160,6 @@ copy /Y ".\\src\\libFLAC\\Release\\FLAC.lib" "%LIBS_DIR%"
 xcopy /Y /S "%FLAC_DIR%\\include\\FLAC" "%INCLUDE_DIR%\\FLAC\"
 xcopy /Y /S "%FLAC_DIR%\\include\\share" "%INCLUDE_DIR%\\share\"
 
-
-:: Remove vorbisenc files
-echo Removing vorbisenc files...
-del /F /Q "%LIBS_DIR%\\vorbisenc.*"
-del /F /Q "%INCLUDE_DIR%\\vorbis\\vorbisenc.h"
 
 cd "%BASE_DIR%"
 echo Done!

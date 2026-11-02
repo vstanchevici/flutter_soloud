@@ -10,6 +10,9 @@ interface class SoLoudLoader {
   /// To reflect [SoLoudLoader] for `io`.
   bool automaticCleanup = false;
 
+  /// Whether the loader has been initialized.
+  bool get isInitialized => false;
+
   Future<void> initialize() async =>
       throw UnsupportedError('platform not supported');
 
@@ -17,13 +20,13 @@ interface class SoLoudLoader {
     String key,
     LoadMode mode, {
     AssetBundle? assetBundle,
-  }) async =>
-      throw UnsupportedError('platform not supported');
+    bool autoDispose = false,
+  }) async => throw UnsupportedError('platform not supported');
 
   Future<AudioSource> loadUrl(
     String url,
     LoadMode mode, {
     http.Client? httpClient,
-  }) async =>
-      throw UnsupportedError('platform not supported');
+    bool autoDispose = false,
+  }) async => throw UnsupportedError('platform not supported');
 }

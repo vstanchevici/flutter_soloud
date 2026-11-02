@@ -60,8 +60,14 @@ class _WebRadioExampleState extends State<WebRadioExample> {
     {'FLAC': 'http://s2.audiostream.hu:8091/bdpstrock_FLAC'},
     {'FLAC': 'https://mscp4.live-streams.nl:8142/lounge.ogg'},
     {'FLAC': 'https://frequence3.net-radio.fr/frequence3gold.flac'},
+    // AAC
+    {'AAC': 'https://stream.zeno.fm/zc6eqtg84c9uv'},
+    {'AAC': 'https://stream.2ghr.org.au:8000/2ghr'},
+    {'AAC': 'http://151.80.56.90:8090/bbc_radio_one_dance.aac'},
+    {'AAC': 'https://media-ssl.musicradio.com/CapitalUK'},
     // https://fmstream.org/index.php
     // 90s
+    {'MP3': 'https://streaming.exclusive.radio/er/abba/icecast.audio'},
     {'MP3': 'https://streams.90s90s.de/pop/mp3-128'},
     // 80s
     {'MP3': 'https://streams.80s80s.de/web/mp3-128'},
@@ -69,9 +75,6 @@ class _WebRadioExampleState extends State<WebRadioExample> {
     {'MP3': 'https://frontend.streamonkey.net/nostalgie-80er/stream/mp3'},
 
     // https://dir.xiph.org/codecs
-    {'Vorbis': 'http://play.global.audio/nova.ogg'},
-    {'Vorbis': 'http://superaudio.radio.br:8074/stream'},
-    {'Vorbis': 'http://stream.lazaradio.com:8100/live.ogg'},
     {'Vorbis': 'http://stream.trendyradio.pl:8000/m'},
     {'Vorbis': 'http://play.global.audio/nrj.ogg'},
     {'Vorbis': 'http://play.global.audio/radio1rock.ogg'},
@@ -125,26 +128,19 @@ class _WebRadioExampleState extends State<WebRadioExample> {
 
       // Create a new client and request
       client = http.Client();
-      final request = http.Request('GET', Uri.parse(url));
-
-      /// MP3 streams require the Icy-MetaData header to get back the position
-      /// of the metadata in the packets received.
-      /// In the `currentStream.headers` map, you will get this value
-      /// in the `icy-metaint` key. This value should be told to flutter_soloud
-      /// using `SoLoud.setMp3BufferIcyMetaInt(value)` before any call
-      /// to `SoLoud.addAudioDataStream`.
-      /// Aside the `icy-metaint` value, you will also have othe `icy-*' values
-      /// to consider for the metadata available for all stream formats.
-      request.headers.addAll({'Icy-MetaData': '1'});
+      final request = http.Request('GET', Uri.parse(url))
+        ..followRedirects = false
+        ..headers.addAll({'Icy-MetaData': '1'});
       currentStream = await client!.send(request);
       parseConnectionInfo(currentStream!.headers);
       mp3IcyMetaIntSent = false;
 
       // Handle redirections
-      if (currentStream!.statusCode == 301 ||
-          currentStream!.statusCode == 302) {
-        final redirectUrl = currentStream!.headers['location'];
-        if (redirectUrl != null) {
+      if (currentStream!.statusCode >= 300 && currentStream!.statusCode < 400) {
+        final redirectLocation = currentStream!.headers['location'];
+        if (redirectLocation != null) {
+          final uri = Uri.parse(url);
+          final redirectUrl = uri.resolve(redirectLocation).toString();
           // Close current connection and try with new URL
           await resetConnections();
           await connectToUrl(redirectUrl);
@@ -161,6 +157,13 @@ class _WebRadioExampleState extends State<WebRadioExample> {
         return;
       }
 
+      final icyMetaInt =
+          int.tryParse(currentStream!.headers['icy-metaint'] ?? '') ?? 0;
+      if (source != null && icyMetaInt > 0) {
+        SoLoud.instance.setBufferIcyMetaInt(source!, icyMetaInt);
+        mp3IcyMetaIntSent = true;
+      }
+
       // Listen to the stream and feed data to the audio source
       subscription = currentStream!.stream.listen(
         (data) {
@@ -168,10 +171,11 @@ class _WebRadioExampleState extends State<WebRadioExample> {
           if (!mp3IcyMetaIntSent) {
             mp3IcyMetaIntSent = true;
             // set it when receiving the first audio chunk
-            SoLoud.instance.setBufferIcyMetaInt(
-              source!,
-              int.parse(currentStream!.headers['icy-metaint'] ?? '0'),
-            );
+            final metaInt =
+                int.tryParse(currentStream!.headers['icy-metaint'] ?? '') ?? 0;
+            if (metaInt > 0) {
+              SoLoud.instance.setBufferIcyMetaInt(source!, metaInt);
+            }
           }
           if (source != null) {
             try {
@@ -226,7 +230,7 @@ class _WebRadioExampleState extends State<WebRadioExample> {
       },
     );
 
-    await SoLoud.instance.play(source!);
+    SoLoud.instance.play(source!);
 
     unawaited(connectToUrl(url));
   }
@@ -234,137 +238,144 @@ class _WebRadioExampleState extends State<WebRadioExample> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            spacing: 20,
-            children: [
-              TextField(
-                controller: urlController,
-                decoration: const InputDecoration(
-                  labelText: 'Choose below or enter a URL to stream',
-                  hintText: 'e.g. http://example.com/stream.mp3',
-                ),
-                onSubmitted: (value) {
-                  if (value.isNotEmpty) {
-                    playUrl(value);
-                  }
-                  setState(() {});
-                },
-              ),
-              Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Choose icecast radio:  ',
-                    style: TextStyle(fontWeight: FontWeight.bold),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              spacing: 20,
+              children: [
+                TextField(
+                  controller: urlController,
+                  decoration: const InputDecoration(
+                    labelText: 'Choose below or enter a URL to stream',
+                    hintText: 'e.g. http://example.com/stream.mp3',
                   ),
-                  DropdownButton(
-                    value: urlId,
-                    isDense: true,
-                    items: List.generate(urls.length, (index) {
-                      return DropdownMenuItem(
-                        value: index,
-                        child: Text(
-                          '${urls[index].keys.first} - '
-                          '${urls[index].values.first}',
-                          style: const TextStyle(fontSize: 12),
+                  onSubmitted: (value) {
+                    if (value.isNotEmpty) {
+                      playUrl(value);
+                    }
+                    setState(() {});
+                  },
+                ),
+                Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Choose icecast radio:  ',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    DropdownButton(
+                      value: urlId,
+                      isDense: true,
+                      isExpanded: true,
+                      items: List.generate(urls.length, (index) {
+                        return DropdownMenuItem(
+                          value: index,
+                          child: Tooltip(
+                            message: urls[index].values.first,
+                            child: Text(
+                              '${urls[index].keys.first} - '
+                              '${urls[index].values.first}',
+                              style: const TextStyle(fontSize: 12),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        );
+                      }),
+                      onChanged: (value) {
+                        urlId = value ?? 0;
+                        playUrl(urls[urlId].values.first);
+                        if (context.mounted) {
+                          setState(() {});
+                        }
+                      },
+                    ),
+                  ],
+                ),
+                OutlinedButton(
+                  onPressed: () async {
+                    await SoLoud.instance.disposeAllSources();
+                    connectionError.value = 'STOPPED';
+                    await subscription?.cancel();
+                    subscription = null;
+                    currentStream = null;
+                    client?.close();
+                    client = null;
+                  },
+                  child: const Text('stop'),
+                ),
+
+                /// Only with preserved buffering is possible to seek
+                if (bufferingType == BufferingType.preserved)
+                  SeekBar(source: source),
+
+                ValueListenableBuilder(
+                  valueListenable: streamBuffering,
+                  builder: (context, value, child) {
+                    return Row(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      spacing: 16,
+                      children: [
+                        BufferBar(
+                          bufferingType: bufferingType,
+                          isBuffering: value,
+                          sound: source,
+                        ),
+                        ValueListenableBuilder(
+                          valueListenable: streamBuffering,
+                          builder: (_, value, __) {
+                            if (value) {
+                              return const Text('BUFFERING!');
+                            }
+                            return const SizedBox.shrink();
+                          },
+                        ),
+                      ],
+                    );
+                  },
+                ),
+                TextField(
+                  controller: connectionInfo,
+                  readOnly: true,
+                  minLines: 3,
+                  maxLines: 10,
+                  style: const TextStyle(fontFamily: 'monospace', fontSize: 11),
+                  decoration: const InputDecoration(
+                    border: OutlineInputBorder(),
+                    labelText: 'Connection info',
+                  ),
+                ),
+                TextField(
+                  controller: metadataText,
+                  readOnly: true,
+                  minLines: 3,
+                  maxLines: 10,
+                  style: const TextStyle(fontFamily: 'monospace', fontSize: 11),
+                  decoration: const InputDecoration(
+                    border: OutlineInputBorder(),
+                    labelText: 'metadata',
+                  ),
+                ),
+                ValueListenableBuilder(
+                  valueListenable: connectionError,
+                  builder: (context, error, child) {
+                    if (error.isNotEmpty) {
+                      return Text(
+                        'Connection Error: $error',
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: Colors.red,
                         ),
                       );
-                    }),
-                    onChanged: (value) {
-                      urlId = value ?? 0;
-                      playUrl(urls[urlId].values.first);
-                      if (context.mounted) {
-                        setState(() {});
-                      }
-                    },
-                  ),
-                ],
-              ),
-              OutlinedButton(
-                onPressed: () async {
-                  await SoLoud.instance.disposeAllSources();
-                  connectionError.value = 'STOPPED';
-                  await subscription?.cancel();
-                  subscription = null;
-                  currentStream = null;
-                  client?.close();
-                  client = null;
-                },
-                child: const Text('stop'),
-              ),
-
-              /// Only with preserved buffering is possible to seek
-              if (bufferingType == BufferingType.preserved)
-                SeekBar(source: source),
-
-              ValueListenableBuilder(
-                valueListenable: streamBuffering,
-                builder: (context, value, child) {
-                  return Row(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    spacing: 16,
-                    children: [
-                      BufferBar(
-                        bufferingType: bufferingType,
-                        isBuffering: value,
-                        sound: source,
-                      ),
-                      ValueListenableBuilder(
-                        valueListenable: streamBuffering,
-                        builder: (_, value, __) {
-                          if (value) {
-                            return const Text('BUFFERING!');
-                          }
-                          return const SizedBox.shrink();
-                        },
-                      ),
-                    ],
-                  );
-                },
-              ),
-              TextField(
-                controller: connectionInfo,
-                readOnly: true,
-                minLines: 3,
-                maxLines: 10,
-                style: const TextStyle(fontFamily: 'monospace', fontSize: 11),
-                decoration: const InputDecoration(
-                  border: OutlineInputBorder(),
-                  labelText: 'Connection info',
+                    }
+                    return const SizedBox.shrink();
+                  },
                 ),
-              ),
-              TextField(
-                controller: metadataText,
-                readOnly: true,
-                minLines: 3,
-                maxLines: 10,
-                style: const TextStyle(fontFamily: 'monospace', fontSize: 11),
-                decoration: const InputDecoration(
-                  border: OutlineInputBorder(),
-                  labelText: 'metadata',
-                ),
-              ),
-              ValueListenableBuilder(
-                valueListenable: connectionError,
-                builder: (context, error, child) {
-                  if (error.isNotEmpty) {
-                    return Text(
-                      'Connection Error: $error',
-                      style: const TextStyle(
-                        fontWeight: FontWeight.bold,
-                        color: Colors.red,
-                      ),
-                    );
-                  }
-                  return const SizedBox.shrink();
-                },
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

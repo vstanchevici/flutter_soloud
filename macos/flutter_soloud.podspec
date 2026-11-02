@@ -2,6 +2,10 @@
 # To learn more about a Podspec see http://guides.cocoapods.org/syntax/podspec.html.
 # Run `pod lib lint flutter_soloud.podspec` to validate before publishing.
 #
+# The native engine is built by the Dart build hook (hook/build.dart) and
+# bundled as a native code asset. This pod only provides the
+# FlutterSoloudPlugin class, which observes the FlutterEngine lifecycle.
+#
 Pod::Spec.new do |s|
   s.name             = 'flutter_soloud'
   s.version          = '0.0.1'
@@ -13,62 +17,36 @@ Flutter audio plugin using SoLoud library and FFI
   s.license          = { :file => '../LICENSE' }
   s.author           = { 'Your Company' => 'email@example.com' }
 
-  # This will ensure the source files in Classes/ are included in the native
-  # builds of apps using this FFI plugin. Podspec does not support relative
-  # paths, so Classes contains a forwarder C file that relatively imports
-  # `../src/*` so that the C sources can be shared among all target platforms.
   s.source           = { :path => '.' }
-  s.source_files     = 'Classes/**/*.{h,mm}'
+  # FlutterSoloudPlugin.h lives in the include directory rather than beside its
+  # .mm because SwiftPM has no explicit publicHeadersPath and therefore uses the
+  # target's default `include` (a symlink to the same directory). Listing it
+  # here matters more on macOS than on iOS: the generated registrant is Swift
+  # and does a plain `import flutter_soloud`, with no __has_include fallback, so
+  # the class has to reach the module's public headers or the build fails.
+  s.source_files     = [
+    'flutter_soloud/Sources/flutter_soloud/FlutterSoloudPlugin.mm',
+    'flutter_soloud/include/FlutterSoloudPlugin.h',
+  ]
+  s.public_header_files = 'flutter_soloud/include/FlutterSoloudPlugin.h'
+  s.resource_bundles = {
+    'flutter_soloud_privacy' => ['flutter_soloud/Sources/flutter_soloud/PrivacyInfo.xcprivacy']
+  }
   s.dependency 'FlutterMacOS'
   s.platform = :osx, '10.15'
 
-  # Check if we should disable opus/ogg support (must exist and be '1')
-  disable_opus_ogg = !ENV['NO_OPUS_OGG_LIBS'].nil? && ENV['NO_OPUS_OGG_LIBS'] == '1'
-  
-  local_lib_path = '$(PODS_TARGET_SRCROOT)/libs'
-  local_include_path = '$(PODS_TARGET_SRCROOT)/include'
-
-  preprocessor_definitions = ['$(inherited)']
-  if disable_opus_ogg
-    preprocessor_definitions << 'NO_OPUS_OGG_LIBS'
-  end
-
-  s.pod_target_xcconfig = { 
-    'HEADER_SEARCH_PATHS' => [
-      local_include_path,
-      # '$(PODS_TARGET_SRCROOT)/include',
-      # '$(PODS_TARGET_SRCROOT)/include/opus',
-      # '$(PODS_TARGET_SRCROOT)/include/ogg',
-      # '$(PODS_TARGET_SRCROOT)/include/vorbis',
-      # '$(PODS_TARGET_SRCROOT)/include/FLAC',
-      # '$(PODS_TARGET_SRCROOT)/include/share',
-      '$(PODS_TARGET_SRCROOT)/../src',
-      '$(PODS_TARGET_SRCROOT)/../src/soloud/include',
-      '${PODS_ROOT}/abseil',
-    ],
-    'GCC_PREPROCESSOR_DEFINITIONS' => preprocessor_definitions.join(' '),
-    'DEFINES_MODULE' => 'YES', 
+  s.pod_target_xcconfig = {
+    'DEFINES_MODULE' => 'YES',
     'EXCLUDED_ARCHS[sdk=iphonesimulator*]' => 'i386',
-    "CLANG_CXX_LANGUAGE_STANDARD" => "c++17",
-    "CLANG_CXX_LIBRARY" => "libc++",
-    'OTHER_LDFLAGS' => disable_opus_ogg ? '' : "-L#{local_lib_path} -logg -lopus -lvorbis -lvorbisfile -lFLAC",
-    'OTHER_CFLAGS' => "-O3 -ffast-math -flto",
-    'OTHER_CPLUSPLUSFLAGS' => "-O3 -ffast-math -flto",
-    'VALID_ARCHS' => 'x86_64 arm64',
+    # FlutterSoloudPlugin.mm includes "engine_lifecycle.h" from src/.
+    'HEADER_SEARCH_PATHS' => ['$(PODS_TARGET_SRCROOT)/../src'],
+    # FlutterSoloudPlugin.mm calls the engine-lifecycle exports, which live in
+    # the native code asset built by the Dart build hook and loaded into the
+    # app. With `use_frameworks!` this pod becomes a dynamic framework with its
+    # own link step, where they would be undefined; dynamic lookup resolves
+    # them at load time against the app binary's loaded images.
+    'OTHER_LDFLAGS' => '$(inherited) -undefined dynamic_lookup',
    }
 
-  # Only include libraries if opus/ogg is enabled
-  # if !disable_opus_ogg
-  #   s.osx.vendored_libraries = [
-  #     'libs/libogg.a',
-  #     'libs/libopus.a',
-  #     'libs/libvorbis.a',
-  #     'libs/libvorbisfile.a',
-  #     'libs/libFLAC.a'
-  #   ]
-  # end
-
   s.swift_version = '5.0'
-  s.osx.framework  = ['AudioToolbox', 'AVFAudio']
-
 end

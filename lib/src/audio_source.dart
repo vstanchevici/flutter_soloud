@@ -53,10 +53,27 @@ enum SoundEventType {
 class AudioSource {
   /// Constructs an instance of [AudioSource].
   @internal
-  AudioSource(this.soundHash);
+  AudioSource(this.soundHash, {this.soundPath = '', this.tempFilePath = ''});
 
   /// The hash uniquely identifying this loaded sound.
   final SoundHash soundHash;
+
+  /// The file path, asset key, URL address, or identifier used to load
+  /// this audio source.
+  ///
+  /// For sounds loaded via `loadFile`, `loadMem`, or `joinTwoSources`, this is
+  /// the `path` argument. For sounds loaded via `loadAsset`, this is the asset
+  /// `key`. For sounds loaded via `loadUrl`, this is the `url`. For sounds
+  /// generated without a path (e.g. `loadWaveform` or `speechText`), this is
+  /// an empty string.
+  String soundPath;
+
+  /// The path to the temporary file created on disk when loading an asset or
+  /// URL on native platforms.
+  ///
+  /// If no temporary file was created (for example with `loadFile`, `loadMem`,
+  /// waveforms, speech, or on the Web platform), this is an empty string.
+  String tempFilePath;
 
   /// The handles of currently playing instances of this sound.
   ///
@@ -69,8 +86,9 @@ class AudioSource {
   /// When the sound finishes playing, its handle will be removed from this set.
   ///
   /// This set is unmodifiable.
-  late final UnmodifiableSetView<SoundHandle> handles =
-      UnmodifiableSetView(handlesInternal);
+  late final UnmodifiableSetView<SoundHandle> handles = UnmodifiableSetView(
+    handlesInternal,
+  );
 
   /// The [internal] backing of [handles]/ Use [handles] from outside
   /// the package.
@@ -175,8 +193,23 @@ class AudioSource {
   ///
   late final filters = FiltersSingle(soundHash: soundHash);
 
+  /// Wheter the sound should be disposed when all instances are finished.
+  ///
+  /// If true, the sound will be disposed when all instances are finished.
+  ///
+  /// ```dart
+  /// AudioSource sound = await SoLoud.instance.loadAsset(...);
+  /// sound.autoDispose = true;
+  ///
+  /// // or just
+  /// AudioSource sound =
+  ///     await SoLoud.instance.loadAsset(..., autoDispose: true);
+  /// ```
+  bool autoDispose = false;
+
   @override
   String toString() {
-    return 'soundHash: $soundHash has ${handles.length} active handles';
+    final pathStr = soundPath.isNotEmpty ? ' ($soundPath)' : '';
+    return 'soundHash: $soundHash$pathStr has ${handles.length} active handles';
   }
 }

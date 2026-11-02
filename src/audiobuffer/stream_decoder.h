@@ -7,8 +7,8 @@
 #include <map>
 #include <memory>
 #include <stdint.h>
-#include <string>
 #include <vector>
+#include "m4a_metadata.h"
 
 typedef enum {
   BUFFER_UNKNOWN,
@@ -16,16 +16,25 @@ typedef enum {
   BUFFER_OGG_OPUS,
   BUFFER_OGG_VORBIS,
   BUFFER_OGG_FLAC,
+  BUFFER_FLAC,
   BUFFER_MP3_WITH_ID3,
-  BUFFER_MP3_STREAM
+  BUFFER_MP3_STREAM,
+  BUFFER_WAV,
+  BUFFER_M4A,
+  BUFFER_AAC,
+  BUFFER_AC3,
+  BUFFER_EAC3
 } DetectedType;
 
 enum class DecoderError {
   NoError,
   FormatNotSupported,
-  NoOpusOggLibs,
+  NoXiphLibs,
   FailedToCreateDecoder,
-  ErrorReadingOggOpusPage
+  ErrorReadingOggOpusPage,
+  // The platform codec failed while decoding (e.g. a MediaCodec error or
+  // malformed output buffer). The decoder cannot continue.
+  CodecError
 };
 
 // Structure to hold track metadata
@@ -90,15 +99,71 @@ struct OggMetadata {
 struct Mp3Metadata {
   std::string title;
   std::string artist;
+  std::string albumArtist;
   std::string album;
   std::string date;
   std::string genre;
+  std::string composer;
+  std::string comment;
+  std::string track;
+  std::string disc;
+  std::string streamUrl;
+  int sampleRate = 0;
+  int channels = 0;
+  int bitrate = 0;
+};
+
+struct AacMetadata {
+  int sampleRate = 0;
+  int channels = 0;
+  std::string profile;
+  int bitrate = 0;
+  int frameLength = 0;
+  std::string title;
+  std::string artist;
+  std::string albumArtist;
+  std::string album;
+  std::string date;
+  std::string genre;
+  std::string composer;
+  std::string comment;
+  std::string track;
+  std::string disc;
+  std::string streamUrl;
+};
+
+struct Ac3Metadata {
+  int sampleRate = 0;
+  int channels = 0;
+  int bitrate = 0;
+  int bsid = 0;
+  int bsmod = 0;
+  int acmod = 0;
+  bool lfeOn = false;
+  int frameSize = 0;
+};
+
+struct Eac3Metadata {
+  int sampleRate = 0;
+  int channels = 0;
+  int bitrate = 0;
+  int bsid = 0;
+  int streamType = 0;
+  int substreamId = 0;
+  int acmod = 0;
+  bool lfeOn = false;
+  int frameSize = 0;
+  int numBlocks = 0;
 };
 
 struct AudioMetadata {
   DetectedType type;
   Mp3Metadata mp3Metadata;
   OggMetadata oggMetadata;
+  AacMetadata aacMetadata;
+  Ac3Metadata ac3Metadata;
+  Eac3Metadata eac3Metadata;
+  M4aMetadata m4aMetadata;
 
 public:
   void debug() {
@@ -119,6 +184,21 @@ public:
     case DetectedType::BUFFER_MP3_WITH_ID3:
       format = "MP3 with ID3";
       break;
+    case DetectedType::BUFFER_WAV:
+      format = "WAV";
+      break;
+    case DetectedType::BUFFER_M4A:
+      format = "M4A";
+      break;
+    case DetectedType::BUFFER_AAC:
+      format = "AAC";
+      break;
+    case DetectedType::BUFFER_AC3:
+      format = "AC3";
+      break;
+    case DetectedType::BUFFER_EAC3:
+      format = "EAC3";
+      break;
     default:
       break;
     }
@@ -129,9 +209,27 @@ public:
         type == DetectedType::BUFFER_MP3_STREAM) {
       std::cout << "Title: " << mp3Metadata.title << std::endl;
       std::cout << "Artist: " << mp3Metadata.artist << std::endl;
+      if (!mp3Metadata.albumArtist.empty()) {
+        std::cout << "Album Artist: " << mp3Metadata.albumArtist << std::endl;
+      }
       std::cout << "Album: " << mp3Metadata.album << std::endl;
       std::cout << "Date: " << mp3Metadata.date << std::endl;
       std::cout << "Genre: " << mp3Metadata.genre << std::endl;
+      if (!mp3Metadata.composer.empty()) {
+        std::cout << "Composer: " << mp3Metadata.composer << std::endl;
+      }
+      if (!mp3Metadata.comment.empty()) {
+        std::cout << "Comment: " << mp3Metadata.comment << std::endl;
+      }
+      if (!mp3Metadata.track.empty()) {
+        std::cout << "Track: " << mp3Metadata.track << std::endl;
+      }
+      if (!mp3Metadata.disc.empty()) {
+        std::cout << "Disc: " << mp3Metadata.disc << std::endl;
+      }
+      if (!mp3Metadata.streamUrl.empty()) {
+        std::cout << "Stream URL: " << mp3Metadata.streamUrl << std::endl;
+      }
     } else if (type == DetectedType::BUFFER_OGG_OPUS ||
                type == DetectedType::BUFFER_OGG_VORBIS ||
                type == DetectedType::BUFFER_OGG_FLAC) {
@@ -218,6 +316,84 @@ public:
                   << "Total Samples: " << oggMetadata.flacInfo.total_samples
                   << std::endl;
       }
+    } else if (type == DetectedType::BUFFER_AAC) {
+      std::cout << "AAC info" << std::endl;
+      std::cout << "\tSample Rate: " << aacMetadata.sampleRate << std::endl;
+      std::cout << "\tChannels: " << aacMetadata.channels << std::endl;
+      std::cout << "\tProfile: " << aacMetadata.profile << std::endl;
+      std::cout << "\tBitrate: " << aacMetadata.bitrate << std::endl;
+      std::cout << "\tFrame Length: " << aacMetadata.frameLength << std::endl;
+      if (!aacMetadata.title.empty()) {
+        std::cout << "\tTitle: " << aacMetadata.title << std::endl;
+      }
+      if (!aacMetadata.artist.empty()) {
+        std::cout << "\tArtist: " << aacMetadata.artist << std::endl;
+      }
+      if (!aacMetadata.album.empty()) {
+        std::cout << "\tAlbum: " << aacMetadata.album << std::endl;
+      }
+      if (!aacMetadata.albumArtist.empty()) {
+        std::cout << "\tAlbum Artist: " << aacMetadata.albumArtist << std::endl;
+      }
+      if (!aacMetadata.date.empty()) {
+        std::cout << "\tDate: " << aacMetadata.date << std::endl;
+      }
+      if (!aacMetadata.genre.empty()) {
+        std::cout << "\tGenre: " << aacMetadata.genre << std::endl;
+      }
+      if (!aacMetadata.composer.empty()) {
+        std::cout << "\tComposer: " << aacMetadata.composer << std::endl;
+      }
+      if (!aacMetadata.comment.empty()) {
+        std::cout << "\tComment: " << aacMetadata.comment << std::endl;
+      }
+      if (!aacMetadata.track.empty()) {
+        std::cout << "\tTrack: " << aacMetadata.track << std::endl;
+      }
+      if (!aacMetadata.disc.empty()) {
+        std::cout << "\tDisc: " << aacMetadata.disc << std::endl;
+      }
+      if (!aacMetadata.streamUrl.empty()) {
+        std::cout << "\tStream URL: " << aacMetadata.streamUrl << std::endl;
+      }
+    } else if (type == DetectedType::BUFFER_AC3) {
+      std::cout << "AC3 info" << std::endl;
+      std::cout << "\tSample Rate: " << ac3Metadata.sampleRate << std::endl;
+      std::cout << "\tChannels: " << ac3Metadata.channels << std::endl;
+      std::cout << "\tBitrate: " << ac3Metadata.bitrate << std::endl;
+      std::cout << "\tBsid: " << ac3Metadata.bsid << std::endl;
+      std::cout << "\tBsmod: " << ac3Metadata.bsmod << std::endl;
+      std::cout << "\tAcmod: " << ac3Metadata.acmod << std::endl;
+      std::cout << "\tLfeOn: " << (ac3Metadata.lfeOn ? "true" : "false") << std::endl;
+      std::cout << "\tFrame Size: " << ac3Metadata.frameSize << std::endl;
+    } else if (type == DetectedType::BUFFER_EAC3) {
+      std::cout << "EAC3 info" << std::endl;
+      std::cout << "\tSample Rate: " << eac3Metadata.sampleRate << std::endl;
+      std::cout << "\tChannels: " << eac3Metadata.channels << std::endl;
+      std::cout << "\tBitrate: " << eac3Metadata.bitrate << std::endl;
+      std::cout << "\tBsid: " << eac3Metadata.bsid << std::endl;
+      std::cout << "\tStream Type: " << eac3Metadata.streamType << std::endl;
+      std::cout << "\tSubstream ID: " << eac3Metadata.substreamId << std::endl;
+      std::cout << "\tAcmod: " << eac3Metadata.acmod << std::endl;
+      std::cout << "\tLfeOn: " << (eac3Metadata.lfeOn ? "true" : "false") << std::endl;
+      std::cout << "\tFrame Size: " << eac3Metadata.frameSize << std::endl;
+      std::cout << "\tNum Blocks: " << eac3Metadata.numBlocks << std::endl;
+    } else if (type == DetectedType::BUFFER_M4A) {
+      std::cout << "M4A / MP4 info" << std::endl;
+      if (!m4aMetadata.title.empty()) std::cout << "\tTitle: " << m4aMetadata.title << std::endl;
+      if (!m4aMetadata.artist.empty()) std::cout << "\tArtist: " << m4aMetadata.artist << std::endl;
+      if (!m4aMetadata.albumArtist.empty()) std::cout << "\tAlbum Artist: " << m4aMetadata.albumArtist << std::endl;
+      if (!m4aMetadata.album.empty()) std::cout << "\tAlbum: " << m4aMetadata.album << std::endl;
+      if (!m4aMetadata.date.empty()) std::cout << "\tDate: " << m4aMetadata.date << std::endl;
+      if (!m4aMetadata.genre.empty()) std::cout << "\tGenre: " << m4aMetadata.genre << std::endl;
+      if (!m4aMetadata.composer.empty()) std::cout << "\tComposer: " << m4aMetadata.composer << std::endl;
+      if (!m4aMetadata.comment.empty()) std::cout << "\tComment: " << m4aMetadata.comment << std::endl;
+      if (!m4aMetadata.track.empty()) std::cout << "\tTrack: " << m4aMetadata.track << std::endl;
+      if (!m4aMetadata.disc.empty()) std::cout << "\tDisc: " << m4aMetadata.disc << std::endl;
+      if (!m4aMetadata.codec.empty()) std::cout << "\tCodec: " << m4aMetadata.codec << std::endl;
+      if (m4aMetadata.sampleRate > 0) std::cout << "\tSample Rate: " << m4aMetadata.sampleRate << std::endl;
+      if (m4aMetadata.channels > 0) std::cout << "\tChannels: " << m4aMetadata.channels << std::endl;
+      if (m4aMetadata.bitrate > 0) std::cout << "\tBitrate: " << m4aMetadata.bitrate << std::endl;
     }
     std::cout << "|---------------------------------|" << std::endl;
   }
@@ -232,10 +408,53 @@ public:
   virtual bool initializeDecoder(int engineSamplerate, int engineChannels) = 0;
   virtual std::pair<std::vector<float>, DecoderError>
   decode(std::vector<unsigned char> &buffer, int *sampleRate,
-         int *channels) = 0;
+         int *channels, size_t maxOutputSamples = 0) = 0;
 
   // Called when no more data will be added to signal end-of-stream
   virtual void setDataEnded() {}
+
+  /// Return true if the decoder still has internal unparsed or queued data to decode.
+  virtual bool hasPendingData() const { return false; }
+
+  /// Return true if this decoder can currently map a target time to a byte
+  /// offset in the encoded stream. For compressed formats this may become
+  /// true only after enough data/metadata has been seen.
+  virtual bool canSeekToTime(double seconds) const {
+    (void)seconds;
+    return false;
+  }
+
+  /// Return the encoded byte offset that corresponds to the given time, or 0
+  /// if the mapping is not yet known.
+  virtual uint64_t timeToByteOffset(double seconds) {
+    (void)seconds;
+    return 0;
+  }
+
+  /// Return the total stream duration in seconds, or a negative value if
+  /// the duration is not yet known.
+  virtual double getDuration() const { return -1.0; }
+
+  /// Set the total encoded audio size in bytes. Wrappers may use this to
+  /// estimate duration for formats that do not store it in the header.
+  virtual void setTotalAudioSizeBytes(uint64_t size) { (void)size; }
+
+  /// Return the number of samples to skip at the start of the stream.
+  /// Relevant for Ogg Opus (header pre_skip); zero for other formats.
+  virtual int preSkip() const { return 0; }
+
+  /// Return the sample rate used by the Ogg granule position. For Opus this
+  /// is always 48000 Hz; for Vorbis it is the stream sample rate.
+  virtual int granuleSampleRate() const { return 0; }
+
+  /// Prepare the decoder for an out-of-buffer seek. The wrapper should keep
+  /// any header/initialization state that is still valid and reset only the
+  /// parts that depend on the current stream position. For Ogg-based
+  /// wrappers this clears the Ogg sync state while preserving the header
+  /// info so that mid-stream data can be decoded after a seek.
+  /// [targetSample] is the absolute decoded sample position the caller will
+  /// continue from, in the wrapper's output sample rate.
+  virtual void prepareForSeek(uint64_t targetSample) { (void)targetSample; }
 
   void setTrackChangeCallback(TrackChangeCallback callback) {
     onTrackChange = callback;
@@ -250,13 +469,22 @@ protected:
 class StreamDecoder {
 public:
   StreamDecoder()
-      : mWrapper(nullptr), isFormatDetected(false), mIcyMetaInt(0) {}
+      : mWrapper(nullptr), isFormatDetected(false), mIcyMetaInt(0),
+        mTotalAudioSizeBytes(0), mDataEndedPending(false) {}
 
   ~StreamDecoder() = default;
 
   void setBufferIcyMetaInt(int icyMetaInt);
 
+  /// Signal that no more data will be added to the stream.
+  ///
+  /// Forwards immediately if the decoder wrapper exists, otherwise stores
+  /// the signal and forwards it when the wrapper is created in decode().
+  /// Without deferred delivery the signal is lost when total data is below
+  /// the 32 KB threshold in addData(), because the wrapper has not been
+  /// created yet at the time BufferStream::setDataIsEnded() calls this.
   void setDataEnded() {
+    mDataEndedPending = true;
     if (mWrapper) {
       mWrapper->setDataEnded();
     }
@@ -264,9 +492,37 @@ public:
 
   std::pair<std::vector<float>, DecoderError>
   decode(std::vector<unsigned char> &buffer, int *sampleRate, int *channels,
-         TrackChangeCallback metadataChangeCallback);
+         TrackChangeCallback metadataChangeCallback,
+         size_t maxOutputSamples = 0);
 
   DetectedType getWrapperType();
+
+  bool hasPendingData() const {
+    return mWrapper ? mWrapper->hasPendingData() : false;
+  }
+
+  bool canSeekToTime(double seconds) const;
+  uint64_t timeToByteOffset(double seconds);
+  double getDuration() const;
+
+  /// Return the Ogg header pre-skip, if any.
+  int preSkip() const;
+
+  /// Return the sample rate of the Ogg granule position.
+  int granuleSampleRate() const;
+
+  /// Prepare the wrapped decoder for a seek to [targetSample].
+  void prepareForSeek(uint64_t targetSample);
+
+  /// Set the total encoded audio size in bytes. The value is forwarded to the
+  /// wrapped decoder as soon as it is created, so wrappers can estimate
+  /// duration for formats that do not store it in the header.
+  void setTotalAudioSizeBytes(uint64_t size) {
+    mTotalAudioSizeBytes = size;
+    if (mWrapper) {
+      mWrapper->setTotalAudioSizeBytes(size);
+    }
+  }
 
 private:
   DetectedType detectAudioFormat(const std::vector<unsigned char> &buffer);
@@ -275,6 +531,11 @@ private:
   std::unique_ptr<IDecoderWrapper> mWrapper;
   bool isFormatDetected;
   int mIcyMetaInt;
+  uint64_t mTotalAudioSizeBytes;
+
+  /// Deferred end-of-stream flag. Set by setDataEnded() when the wrapper
+  /// does not exist yet. Forwarded to the wrapper in decode() once created.
+  bool mDataEndedPending;
 };
 
 #endif // STREAM_DECODER_H

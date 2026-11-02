@@ -2,8 +2,8 @@
 #define OPUS_STREAM_DECODER_H
 
 #include "stream_decoder.h"
+#include "ogg_seek_index.h"
 #include <vector>
-#include <iostream>
 #include <stdexcept>
 #include <cstring>
 #include <cstdint>
@@ -15,7 +15,11 @@
 #else
 #include <fstream>
 #include <deque>
+#if __has_include(<opus/opus.h>)
 #include <opus/opus.h>
+#else
+#include <opus.h>
+#endif
 #include <ogg/ogg.h>
 #endif
 
@@ -32,12 +36,22 @@ public:
     
     bool initializeDecoder(int engineSamplerate, int engineChannels) override;
     
-    std::pair<std::vector<float>, DecoderError> decode(std::vector<unsigned char>& buffer, int* samplerate, int* channels) override;
-    
+    std::pair<std::vector<float>, DecoderError> decode(std::vector<unsigned char>& buffer, int* samplerate, int* channels, size_t maxOutputSamples = 0) override;
+
+    void setDataEnded() override { mDataEnded = true; }
+    bool hasPendingData() const override;
+
+    bool canSeekToTime(double seconds) const override;
+    uint64_t timeToByteOffset(double seconds) override;
+    double getDuration() const override;
+    int preSkip() const override { return static_cast<int>(opusInfo.pre_skip); }
+    int granuleSampleRate() const override { return 48000; }
+    void prepareForSeek(uint64_t targetSample) override;
+
 private:
-    AudioMetadata getMetadata(ogg_packet* packet);
+    void getMetadata(ogg_packet* packet);
     OpusInfo parseOpusHead(ogg_packet *packet);
-    std::vector<float> decodePacket(ogg_packet *packet);
+    void decodePacket(ogg_packet *packet, std::vector<float> &out);
     bool ensureDecoder(int newSampleRate, int newChannels);
 
     OpusDecoder *decoder;
@@ -59,8 +73,16 @@ private:
     int skipSamplesPending;
     int64_t totalOutputSamples;
     int64_t totalSamplesExpected;
+    bool mDataEnded;
+    bool mDrained;
 
     OpusInfo opusInfo;
+
+    OggSeekIndex mSeekIndex;
+
+    /// Scratch buffer for opus_decode_float, reused across packets to avoid
+    /// allocating per packet.
+    std::vector<float> mOutputScratch;
 };
 
 #endif // OPUS_STREAM_DECODER_H

@@ -14,17 +14,17 @@ class SoLoudIsolateSpawnFailedException extends SoLoudDartException {
 }
 
 /// An exception that is thrown when a SoLoud method is accessed before
-/// the engine is initialized (by calling `SoLoud.initialize()` and either
-/// awaiting that method call, or awaiting the `SoLoud.initialized` Future
-/// elsewhere, or by checking the synchronous `SoLoud.isInitialized` bool).
+/// the engine is initialized (by calling `SoLoud.init()` and either
+/// awaiting that method call, or by checking the synchronous
+/// `SoLoud.isInitialized` bool).
 class SoLoudNotInitializedException extends SoLoudDartException {
   /// Creates a new [SoLoudNotInitializedException].
   const SoLoudNotInitializedException([super.message]);
 
   @override
-  String get description => 'SoLoud has not been initialized yet. '
-      'Call `SoLoud.initialize()` first and await it, or await the '
-      '`SoLoud.initialized` Future elsewhere. Alternately, you can check '
+  String get description =>
+      'SoLoud has not been initialized yet. '
+      'Call `SoLoud.init()` first and await it. Alternately, you can check '
       'the synchronous `SoLoud.isInitialized` bool just before calling '
       'any SoLoud method.';
 }
@@ -55,7 +55,8 @@ class SoLoudTemporaryFolderFailedException extends SoLoudDartException {
   const SoLoudTemporaryFolderFailedException([super.message]);
 
   @override
-  String get description => 'There was a problem creating or opening the '
+  String get description =>
+      'There was a problem creating or opening the '
       'temporary folder that is used to hold audio files.';
 }
 
@@ -64,7 +65,7 @@ class SoLoudTemporaryFolderFailedException extends SoLoudDartException {
 class SoLoudNetworkStatusCodeException extends SoLoudDartException {
   /// Creates a new [SoLoudNetworkStatusCodeException].
   const SoLoudNetworkStatusCodeException(this.statusCode, [String? message])
-      : super(message);
+    : super(message);
 
   /// The status code returned from the network request.
   final int statusCode;
@@ -78,13 +79,14 @@ class SoLoudNetworkStatusCodeException extends SoLoudDartException {
 class SoLoudSoundHashNotFoundDartException extends SoLoudDartException {
   /// Creates a new [SoLoudSoundHashNotFoundDartException].
   const SoLoudSoundHashNotFoundDartException(this.soundHash, [String? message])
-      : super(message);
+    : super(message);
 
   /// The sound hash that was not found.
   final SoundHash soundHash;
 
   @override
-  String get description => 'The sound with specified hash is not found '
+  String get description =>
+      'The sound with specified hash is not found '
       '(on the Dart side).';
 }
 
@@ -95,7 +97,8 @@ class SoLoudCreateVoiceGroupDartException extends SoLoudDartException {
   const SoLoudCreateVoiceGroupDartException([super.message]);
 
   @override
-  String get description => 'SoLoud.createVoiceGroup() was not able to create '
+  String get description =>
+      'SoLoud.createVoiceGroup() was not able to create '
       ' a new voice group.';
 }
 
@@ -106,7 +109,8 @@ class SoLoudFilterForSingleSoundOnWebDartException extends SoLoudDartException {
   const SoLoudFilterForSingleSoundOnWebDartException([super.message]);
 
   @override
-  String get description => 'Filters for single sounds are not supported on '
+  String get description =>
+      'Filters for single sounds are not supported on '
       'the Web platform.';
 }
 
@@ -116,21 +120,34 @@ class SoLoudWrongOpusParamsException extends SoLoudDartException {
   const SoLoudWrongOpusParamsException([super.message]);
 
   @override
-  String get description => 'Wrong Opus parameter(s). '
+  String get description =>
+      'Wrong Opus parameter(s). '
       'When using Opus, the sample rate must be 8, 12, 16, 24, or 48 kHz and '
       'the channel count must be 1 or 2.';
 }
 
 /// An exception that is thrown when at buit-time the Opus and Ogg libraries
 /// are not available and trying to use the Opus codec.
-class SoLoudOpusOggLibsNotAvailableException extends SoLoudDartException {
-  /// Creates a new [SoLoudOpusOggLibsNotAvailableException].
-  const SoLoudOpusOggLibsNotAvailableException([super.message]);
+class SoLoudXiphLibsNotAvailableException extends SoLoudDartException {
+  /// Creates a new [SoLoudXiphLibsNotAvailableException].
+  const SoLoudXiphLibsNotAvailableException([super.message]);
 
   @override
-  String get description => 'The Opus and Ogg libraries are not available. '
+  String get description =>
+      'The Xiph libraries are not available. '
       'If your target platform is Android, could happens that the NDK built '
       'files are not updated. If this is the case, or you just want to read '
       'more about enablig/disabling the libs, please read the documentation: '
-      'https://github.com/alnitak/flutter_soloud/blob/main/NO_OPUS_OGG_LIBS.md';
+      'https://docs.page/alnitak/flutter_soloud_docs/get_started/no_xiph_libs';
+}
+
+/// An exception that is thrown when trying to use a bus that has been disposed.
+class SoLoudBusDisposedDartException extends SoLoudDartException {
+  /// Creates a new [SoLoudBusDisposedDartException].
+  const SoLoudBusDisposedDartException([super.message]);
+
+  @override
+  String get description =>
+      'The bus has already been disposed or not yet '
+      'created.';
 }

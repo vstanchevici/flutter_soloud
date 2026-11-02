@@ -2,7 +2,7 @@ name: flutter_soloud_example
 description: Demonstrates how to use the flutter_soloud plugin.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 homepage: https://github.com/alnitak/flutter_soloud
-maintainer: Marco Bavagnoli (@lildeimos)
+maintainer: Marco Bavagnoli (@alnitak)
 
 version: 0.1.0+1
 
@@ -15,7 +15,7 @@ dependencies:
 
   cupertino_icons: ^1.0.8
   
-  file_picker: ^10.3.2
+  file_picker: ^10.3.10
 
   flutter:
     sdk: flutter
@@ -25,6 +25,7 @@ dependencies:
 
   http: ^1.5.0
   logging: ^1.2.0
+  path_provider: ^2.1.6
 
   web_socket_channel: ^3.0.1
 
@@ -39,4 +40,18 @@ flutter:
 
   assets:
     - assets/audio/
-    - assets/audio/12Bands/
+
+## Xiph libraries options (optional):
+## See https://docs.page/alnitak/flutter_soloud_docs/get_started/xiph_libs for more info.
+# hooks:
+#   user_defines:
+#     flutter_soloud:
+#       no_xiph_libs: false
+#       linux_use_system_libs: true
+#       linux_force_build_libs: false
+#       macos_use_system_libs: true
+#       macos_force_build_libs: false
+#       windows_use_system_libs: true
+#       windows_force_build_libs: false
+#       android_force_build_libs: true
+#       ios_force_build_libs: true

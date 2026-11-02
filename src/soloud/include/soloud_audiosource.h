@@ -25,6 +25,8 @@ freely, subject to the following restrictions:
 #ifndef SOLOUD_AUDIOSOURCE_H
 #define SOLOUD_AUDIOSOURCE_H
 
+#include <stdint.h>
+
 #include "soloud.h"
 #include "soloud_fader.h"
 #include "soloud_filter.h"
@@ -96,6 +98,17 @@ namespace SoLoud
 		unsigned int mFlags;
 		// Latest handle for this voice
 		handle mHandle;
+	};
+
+	// ###### flutter_soloud local patch (mix checkpoints) ######
+	// Base class for heap snapshots of a source instance's consumption state
+	// (decoder position, stream offset, oscillator phase, ...), captured at
+	// mix-quantum boundaries for retroactive re-mixing (see
+	// OPTION_B_RETROACTIVE_REMIX_PLAN.md). Subclasses of AudioSourceInstance
+	// that support re-mixing derive their own snapshot struct from this.
+	struct SourceStateSnapshot
+	{
+		virtual ~SourceStateSnapshot() {}
 	};
 
 	// Base class for audio instances
@@ -185,11 +198,36 @@ namespace SoLoud
 		unsigned int mLeftoverSamples;
 		// Number of samples to delay streaming
 		unsigned int mDelaySamples;
+		// Samples this voice may still produce before being stopped by a
+		// scheduled absolute-time stop (scheduleStopAt). -1 means inactive.
+		// Decremented while the voice is not paused, in lockstep with
+		// mDelaySamples: in mixBus_internal for audible and ticking voices,
+		// in the fader pass for inaudible non-ticking ones.
+		long long mStopSamplesLeft;
 		// When looping, start playing from this time
 		time mLoopPoint;
+		// When looping, wrap before this time. Zero uses the natural source end.
+		time mLoopEndPoint;
+		// When looping, start playing from this exact frame offset. -1 means use mLoopPoint.
+		long long mLoopStartFrame;
+		// When looping, wrap before this exact frame offset. -1 means use mLoopEndPoint.
+		long long mLoopEndFrame;
+		// Number of source frames decoded since the last seek.
+		uint64_t mSourceSamplePosition;
 
 		// Get N samples from the stream to the buffer. Report samples written.
 		virtual unsigned int getAudio(float *aBuffer, unsigned int aSamplesToRead, unsigned int aBufferSize) = 0;
+		// ###### flutter_soloud local patch (mix checkpoints) ######
+		// Returns a heap snapshot of the subclass-specific source-consumption
+		// state (everything getAudio() mutates beyond the POD base-class
+		// fields, which the engine snapshots itself), or nullptr if this
+		// source is not restorable -- live streams, pull streams, synths.
+		// Retroactive events affecting a voice with a nullptr snapshot
+		// degrade to going-forward behavior. The caller takes ownership.
+		virtual SourceStateSnapshot *captureSourceState() { return nullptr; }
+		// Restores a snapshot produced by captureSourceState(). Never called
+		// with nullptr, and only on the same instance that produced it.
+		virtual void restoreSourceState(SourceStateSnapshot *) {}
 		// Has the stream ended?
 		virtual bool hasEnded() = 0;
 		// Seek to certain place in the stream. Base implementation is generic "tape" seek (and slow).

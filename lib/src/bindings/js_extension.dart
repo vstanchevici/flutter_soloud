@@ -1,10 +1,53 @@
 // ignore_for_file: public_member_api_docs
 
 import 'dart:js_interop';
+import 'dart:typed_data';
 import 'package:web/web.dart' as web;
 
 @JS('globalThis')
 external JSObject get globalThis;
+
+@JS('eval')
+external void jsEval(String code);
+
+@JS('window.miniaudio.devices[0].webaudio.state')
+external String? get miniaudioAudioContextState;
+
+@JS('globalThis.crossOriginIsolated')
+external bool? get isCrossOriginIsolated;
+
+/// The WASM module instance. Null until `init_soloud.js` has finished
+/// instantiating it (or if the glue failed to load).
+@JS('self.Module_soloud')
+external JSObject? get moduleSoloudInstance;
+
+/// Promise exposed by `init_soloud.js` that resolves when the WASM
+/// module is ready. Used to wait out the startup race instead of crashing
+/// when the engine is initialized while the module is still loading.
+@JS('self.flutter_soloud_ready')
+external JSPromise? get flutterSoloudReady;
+
+/// Whether the loaded WASM build was compiled with ASYNCIFY (only the
+/// multi-threaded AudioWorklet build is). Set by `init_soloud.js`.
+/// Used to decide whether `initEngine`/`changeDevice` must go through
+/// `ccall({async: true})`.
+@JS('self.flutter_soloud_has_asyncify')
+external bool? get flutterSoloudHasAsyncify;
+
+/// The WASM build flavor in use, set by `init_soloud.js`:
+/// `mt` (multi-threaded, requires cross-origin isolation),
+/// `st` (single-threaded) or `manual` (glue script loaded by the page).
+@JS('self.flutter_soloud_build')
+external String? get flutterSoloudBuild;
+
+/// Construct a JavaScript `BigInt` from a string value.
+///
+/// Emscripten represents 64-bit integers (e.g. `uint64_t`) as JavaScript
+/// `BigInt`s on the WebAssembly boundary. Dart `int` values are converted to
+/// JS `Number`s, which cannot be passed directly to these exports, so callers
+/// must wrap the value with this helper first.
+@JS('BigInt')
+external JSAny wasmBigInt(String value);
 
 @JS('Module_soloud._malloc')
 external int wasmMalloc(int bytesCount);
@@ -16,13 +59,24 @@ external void wasmFree(int ptrAddress);
 external int wasmGetI32Value(int ptrAddress, String type);
 
 @JS('Module_soloud.getValue')
+external double wasmGetF64Value(int ptrAddress, String type);
+
+@JS('Module_soloud.getValue')
 external double wasmGetF32Value(int ptrAddress, String type);
 
-@JS('Module_soloud.HEAPU8.buffer')
-external JSArrayBuffer get wasmHeapU8Buffer;
+/// The WASM heap as a [JSUint8Array].
+///
+/// NOTE: the underlying buffer (`Module_soloud.HEAPU8.buffer`) must not be
+/// declared as a `JSArrayBuffer`: the module could in principle be compiled
+/// with `-pthread`/`SHARED_MEMORY=1`, making the buffer a `SharedArrayBuffer`,
+/// and the implicit downcast would throw on the JS build (dart2js) whenever
+/// runtime type checks are enabled (e.g. with `--optimization-level=0`).
+/// Using the typed-array views instead works for both buffer kinds.
+@JS('Module_soloud.HEAPU8')
+external JSUint8Array get wasmHeapU8;
 
 @JS('Module_soloud.HEAPF32')
-external JSFloat32Array get wasmHeapF32Buffer;
+external JSFloat32Array get wasmHeapF32;
 
 @JS('Module_soloud.UTF8ToString')
 external String wasmUtf8ToString(int ptrAddress);
@@ -45,8 +99,29 @@ external JSFunction wasmCccall(
   JSArray<JSAny> args,
 );
 
+/// Calls a WASM export asynchronously (Emscripten `ccall` with
+/// `{async: true}`).
+///
+/// Needed in the multi-threaded (AudioWorklet) build, which is compiled
+/// with ASYNCIFY: exports that can reach `emscripten_sleep` (currently
+/// `initEngine` and `changeDevice`, via `ma_device_init`) unwind the WASM
+/// stack while the worklet thread starts up. A synchronous call would
+/// return early with a garbage value; the returned promise instead resolves
+/// with the actual return value once the call completes.
+@JS('Module_soloud.ccall')
+external JSPromise<JSNumber> wasmCcallAsync(
+  JSString fName,
+  JSString returnType,
+  JSArray<JSString> argTypes,
+  JSArray<JSAny?> args,
+  JSObject options,
+);
+
 @JS('Module_soloud._createWorkerInWasm')
 external int wasmCreateWorkerInWasm();
+
+@JS('Module_soloud._getEngineGeneration')
+external int wasmGetEngineGeneration();
 
 @JS('Module_soloud._sendToWorker')
 external void wasmSendToWorker(int message, int value);
@@ -67,8 +142,26 @@ external int wasmSetBufferStream(
   int onMetadataPtr,
 );
 
+@JS('Module_soloud._setPullBufferStream')
+external int wasmSetPullBufferStream(
+  int hashPtr,
+  int bufferSizeBytes,
+  double bufferTriggerPosition,
+  int sampleRate,
+  int channels,
+  int format,
+  JSAny audioSizeBytes,
+  int onBufferingPtr,
+  int onMetadataPtr,
+  int onMoreDataIsNeededPtr,
+  int onAudioDurationPtr,
+);
+
 @JS('Module_soloud._resetBufferStream')
 external int wasmResetBufferStream(int hash);
+
+@JS('Module_soloud._resetPullBufferStream')
+external int wasmResetPullBufferStream(int hash);
 
 @JS('Module_soloud._getStreamTimeConsumed')
 external int wasmGetStreamTimeConsumed(int hash, int timeConsumedPtr);
@@ -79,14 +172,66 @@ external int wasmSetBufferIcyMetaInt(int hash, int icyMetaInt);
 @JS('Module_soloud._addAudioDataStream')
 external int wasmAddAudioDataStream(int hash, int audioChunkPtr, int dataLen);
 
+@JS('Module_soloud._addPullBufferDataStream')
+external int wasmAddPullBufferDataStream(
+  int hash,
+  int audioChunkPtr,
+  int dataLen,
+  JSAny offset,
+);
+
+@JS('Module_soloud._getPullBufferTimeRange')
+external int wasmGetPullBufferTimeRange(
+  int hash,
+  int startTimePtr,
+  int endTimePtr,
+);
+
 @JS('Module_soloud._setDataIsEnded')
 external int wasmSetDataIsEnded(int hash);
 
 @JS('Module_soloud._getBufferSize')
 external int wasmGetBufferSize(int hash, int sizeInBytesPtr);
 
-@JS('Module_soloud._areOpusOggLibsAvailable')
-external int wasmAreOpusOggLibsAvailable();
+@JS('Module_soloud._areXiphLibsAvailable')
+external int wasmAreXiphLibsAvailable();
+
+@JS('Module_soloud._startMixerCapture')
+external int wasmStartMixerCapture(
+  int format,
+  int sampleRate,
+  int channels,
+  int bufferSizeBytes,
+  int notificationThresholdBytes,
+  int chunkPCMFrames,
+);
+
+@JS('Module_soloud._stopMixerCapture')
+external void wasmStopMixerCapture();
+
+@JS('Module_soloud._isMixerCaptureRunning')
+external int wasmIsMixerCaptureRunning();
+
+@JS('Module_soloud._getMixerCaptureBufferPointer')
+external int wasmGetMixerCaptureBufferPointer();
+
+@JS('Module_soloud._getMixerCaptureBufferSize')
+external int wasmGetMixerCaptureBufferSize();
+
+@JS('Module_soloud._getMixerCaptureAvailableBytes')
+external int wasmGetMixerCaptureAvailableBytes();
+
+@JS('Module_soloud._getMixerCaptureReadOffset')
+external int wasmGetMixerCaptureReadOffset();
+
+@JS('Module_soloud._advanceMixerCaptureReadPosition')
+external void wasmAdvanceMixerCaptureReadPosition(int bytes);
+
+@JS('Module_soloud._getMixerOutputWavHeader')
+external int wasmGetMixerOutputWavHeader();
+
+@JS('Module_soloud._setMixerOutputCallback')
+external void wasmSetMixerOutputCallback(int callbackPtr);
 
 @JS('Module_soloud._initEngine')
 external int wasmInitEngine(
@@ -94,7 +239,17 @@ external int wasmInitEngine(
   int sampleRate,
   int bufferSize,
   int channels,
+  int lowLatency,
 );
+
+@JS('Module_soloud._stopAudioDevice')
+external int wasmStopAudioDevice(int force);
+
+@JS('Module_soloud._startAudioDevice')
+external int wasmStartAudioDevice();
+
+@JS('Module_soloud._getAudioDeviceState')
+external int wasmGetAudioDeviceState();
 
 @JS('Module_soloud._changeDevice')
 external int wasmChangeDevice(int deviceId);
@@ -118,6 +273,18 @@ external void wasmFreeListPlaybackDevices(
 @JS('Module_soloud._dispose')
 external void wasmDeinit();
 
+/// Claims the native engine before `initEngine` (resets the shutdown latch).
+///
+/// Since the engine-lifecycle merge the C++ `prepareEngineInit` takes an
+/// `int64_t owner_engine_id`, which crosses the JS/WASM boundary as a
+/// `BigInt`. The web has no FlutterEngine lifecycle hooks, so it always
+/// passes the `kNoEngineId` sentinel (-1), same as `setMixerOutputCallback`.
+@JS('Module_soloud._prepareEngineInit')
+external void wasmPrepareEngineInit(JSAny engineId);
+
+@JS('Module_soloud._requestEngineShutdown')
+external void wasmRequestEngineShutdown();
+
 @JS('Module_soloud._isInited')
 external int wasmIsInited();
 
@@ -134,6 +301,16 @@ external int wasmLoadMem(
   int memPtr,
   int length,
   int loadIntoMem,
+  int hashPtr,
+);
+
+@JS('Module_soloud._joinTwoSources')
+external int wasmJoinTwoSources(
+  int uniqueNamePtr,
+  int mem1Ptr,
+  int mem2Ptr,
+  int length1,
+  int length2,
   int hashPtr,
 );
 
@@ -166,10 +343,10 @@ external void wasmSetWaveform(int soundHash, int newWaveform);
 external int wasmSpeechText(int textToSpeechPtr, int handlePtr);
 
 @JS('Module_soloud._pauseSwitch')
-external void wasmPauseSwitch(int handle);
+external int wasmPauseSwitch(int handle);
 
 @JS('Module_soloud._setPause')
-external void wasmSetPause(int handle, int pause);
+external int wasmSetPause(int handle, int pause);
 
 @JS('Module_soloud._getPause')
 external int wasmGetPause(int handle);
@@ -180,20 +357,94 @@ external void wasmSetRelativePlaySpeed(int handle, double speed);
 @JS('Module_soloud._getRelativePlaySpeed')
 external double wasmGetRelativePlaySpeed(int handle);
 
+@JS('Module_soloud._getApproximateVolume')
+external double wasmGetApproximateVolume(int channel);
+
 @JS('Module_soloud._play')
 external int wasmPlay(
   int soundHash,
+  int busId,
   double volume,
   double pan,
   // ignore: avoid_positional_boolean_parameters
   bool paused,
+  // ignore: avoid_positional_boolean_parameters
   bool looping,
   double loopingStartAt,
+  double loopingEndAt,
+  int loopingStartOffsetAt,
+  int loopingEndOffsetAt,
+  double scale,
   int handlePtr,
 );
 
+@JS('Module_soloud._playClocked')
+external int wasmPlayClocked(
+  int soundHash,
+  double soundTime,
+  int busId,
+  double volume,
+  double pan,
+  double scale,
+  // ignore: avoid_positional_boolean_parameters
+  bool looping,
+  double loopingStartAt,
+  double loopingEndAt,
+  int loopingStartOffsetAt,
+  int loopingEndOffsetAt,
+  int handlePtr,
+);
+
+@JS('Module_soloud._setDelaySamples')
+external void wasmSetDelaySamples(int handle, int samples);
+
+@JS('Module_soloud._getStreamTime')
+external double wasmGetStreamTime(int handle);
+
+@JS('Module_soloud._resetStreamTime')
+external void wasmResetStreamTime();
+
+@JS('Module_soloud._getEngineTime')
+external double wasmGetEngineTime();
+
+@JS('Module_soloud._playScheduled')
+external int wasmPlayScheduled(
+  int soundHash,
+  double atTime,
+  double duration,
+  int busId,
+  double volume,
+  double pan,
+  double scale,
+  // ignore: avoid_positional_boolean_parameters
+  bool looping,
+  double loopingStartAt,
+  double loopingEndAt,
+  int loopingStartOffsetAt,
+  int loopingEndOffsetAt,
+  int handlePtr,
+);
+
+@JS('Module_soloud._stopScheduled')
+external void wasmStopScheduled(int handle, double atTime);
+
+@JS('Module_soloud._fadeScheduled')
+external void wasmFadeScheduled(
+  int handle,
+  double atTime,
+  double to,
+  double fadeTime,
+  int thenStop,
+);
+
 @JS('Module_soloud._stop')
-external void wasmStop(int handle);
+external int wasmStop(int handle);
+
+@JS('Module_soloud._stopAll')
+external void wasmStopAll();
+
+@JS('Module_soloud._stopAudioSource')
+external void wasmStopAudioSource(int soundHash);
 
 @JS('Module_soloud._disposeSound')
 external void wasmDisposeSound(int soundHash);
@@ -213,29 +464,28 @@ external double wasmGetLoopPoint(int handle);
 @JS('Module_soloud._setLoopPoint')
 external void wasmSetLoopPoint(int handle, double time);
 
+@JS('Module_soloud._getLoopEndPoint')
+external double wasmGetLoopEndPoint(int handle);
+
+@JS('Module_soloud._setLoopEndPoint')
+external void wasmSetLoopEndPoint(int handle, double time);
+
 @JS('Module_soloud._setVisualizationEnabled')
-external void wasmSetVisualizationEnabled(int enabled);
+external int wasmSetVisualizationEnabled(
+  int enabled,
+  int windowSize,
+  int kind,
+  int channel,
+);
 
 @JS('Module_soloud._getVisualizationEnabled')
 external int wasmGetVisualizationEnabled();
 
-@JS('Module_soloud._getWave')
-external void wasmGetWave(int samplesPtr, int isTheSameAsBeforePtr);
-
-@JS('Module_soloud._getFft')
-external void wasmGetFft(int samplesPtr, int isTheSameAsBeforePtr);
-
 @JS('Module_soloud._setFftSmoothing')
 external void wasmSetFftSmoothing(double smooth);
 
-@JS('Module_soloud._getAudioTexture')
-external void wasmGetAudioTexture(int samplesPtr, int isTheSameAsBeforePtr);
-
-@JS('Module_soloud._getAudioTexture2D')
-external void wasmGetAudioTexture2D(int samplesPtr, int isTheSameAsBeforePtr);
-
-@JS('Module_soloud._getTextureValue')
-external double wasmGetTextureValue(int row, int column);
+@JS('Module_soloud._setFftDecibelRange')
+external void wasmSetFftDecibelRange(double minDecibels, double maxDecibels);
 
 @JS('Module_soloud._getLength')
 external double wasmGetLength(int soundHash);
@@ -282,8 +532,9 @@ external int wasmGetVoiceCount();
 @JS('Module_soloud._getProtectVoice')
 external int wasmGetProtectVoice(int handle);
 
-@JS('Module._setInaudibleBehavior')
-external void wasmSetInaudibleBehavior(int handle, int mustTick, int kill);
+@JS('Module_soloud._setInaudibleBehavior')
+// ignore: avoid_positional_boolean_parameters
+external void wasmSetInaudibleBehavior(int handle, bool mustTick, bool kill);
 
 @JS('Module_soloud._setProtectVoice')
 external void wasmSetProtectVoice(int handle, int protect);
@@ -360,6 +611,7 @@ external int wasmOscillateGlobalVolume(double from, double to, double time);
 @JS('Module_soloud._fadeFilterParameter')
 external int wasmFadeFilterParameter(
   int handle,
+  int busId,
   int filterType,
   int attributeId,
   double to,
@@ -369,6 +621,7 @@ external int wasmFadeFilterParameter(
 @JS('Module_soloud._oscillateFilterParameter')
 external int wasmOscillateFilterParameter(
   int handle,
+  int busId,
   int filterType,
   int attributeId,
   double from,
@@ -381,7 +634,12 @@ external int wasmOscillateFilterParameter(
 // ///////////////////////////////////////
 
 @JS('Module_soloud._isFilterActive')
-external int wasmIsFilterActive(int soundHash, int filterType, int idPtr);
+external int wasmIsFilterActive(
+  int soundHash,
+  int busId,
+  int filterType,
+  int idPtr,
+);
 
 @JS('Module_soloud._getFilterParamNames')
 external int wasmGetFilterParamNames(
@@ -391,14 +649,15 @@ external int wasmGetFilterParamNames(
 );
 
 @JS('Module_soloud._addFilter')
-external int wasmAddFilter(int soundHash, int filterType);
+external int wasmAddFilter(int soundHash, int busId, int filterType);
 
 @JS('Module_soloud._removeFilter')
-external int wasmRemoveFilter(int soundHash, int filterType);
+external int wasmRemoveFilter(int soundHash, int busId, int filterType);
 
 @JS('Module_soloud._setFilterParams')
 external int wasmSetFilterParams(
   int handle,
+  int busId,
   int filterType,
   int attributeId,
   double value,
@@ -407,14 +666,16 @@ external int wasmSetFilterParams(
 @JS('Module_soloud._getFilterParams')
 external int wasmGetFilterParams(
   int handle,
+  int busId,
   int filterType,
   int attributeId,
   int paramValuePtr,
 );
 
-@JS('Module_soloud._play3d')
+@JS('Module_soloud._play3dWithLoopPoints')
 external int wasmPlay3d(
   int soundHash,
+  int busId,
   double posX,
   double posY,
   double posZ,
@@ -425,6 +686,54 @@ external int wasmPlay3d(
   int paused,
   int looping,
   double loopingStartAt,
+  double loopingEndAt,
+  int loopingStartOffsetAt,
+  int loopingEndOffsetAt,
+  double scale,
+  int handlePtr,
+);
+
+@JS('Module_soloud._play3dClocked')
+external int wasmPlay3dClocked(
+  int soundHash,
+  double soundTime,
+  int busId,
+  double posX,
+  double posY,
+  double posZ,
+  double velX,
+  double velY,
+  double velZ,
+  double volume,
+  double scale,
+  int looping,
+  double loopingStartAt,
+  double loopingEndAt,
+  int loopingStartOffsetAt,
+  int loopingEndOffsetAt,
+  int handlePtr,
+);
+
+@JS('Module_soloud._play3dScheduled')
+external int wasmPlay3dScheduled(
+  int soundHash,
+  double atTime,
+  double duration,
+  int busId,
+  double posX,
+  double posY,
+  double posZ,
+  double velX,
+  double velY,
+  double velZ,
+  double volume,
+  double scale,
+  // ignore: avoid_positional_boolean_parameters
+  bool looping,
+  double loopingStartAt,
+  double loopingEndAt,
+  int loopingStartOffsetAt,
+  int loopingEndOffsetAt,
   int handlePtr,
 );
 
@@ -521,3 +830,76 @@ external int wasmReadSamplesFromMem(
   bool average,
   int pSamplesPtr,
 );
+
+@JS('Module_soloud._createBus')
+external int wasmCreateBus();
+
+@JS('Module_soloud._destroyBus')
+external void wasmDestroyBus(int busId);
+
+@JS('Module_soloud._busPlayOnEngine')
+external int wasmBusPlayOnEngine(
+  int busId,
+  double volume,
+  int paused,
+  int handlePtr,
+);
+
+@JS('Module_soloud._busSetChannels')
+external void wasmBusSetChannels(int busId, int channels);
+
+@JS('Module_soloud._busSetVisualizationEnabled')
+external int wasmBusSetVisualizationEnabled(
+  int busId,
+  int enabled,
+  int windowSize,
+  int kind,
+  int channel,
+);
+
+@JS('Module_soloud._busGetVisualizationEnabled')
+external int wasmBusGetVisualizationEnabled(int busId);
+
+@JS('Module_soloud._busGetApproximateVolume')
+external double wasmBusGetApproximateVolume(int busId, int channel);
+
+@JS('Module_soloud._busAnnexSound')
+external void wasmBusAnnexSound(int busId, int voiceHandle);
+
+@JS('Module_soloud._busGetActiveVoiceCount')
+external int wasmBusGetActiveVoiceCount(int busId);
+
+/// Decodes audio data on the web using the browser's OfflineAudioContext.
+/// Returns interleaved Float32List with metadata, or null on failure.
+Future<({int sampleRate, int channels, Float32List samples})?>
+jsDecodeAudioDataWeb(Uint8List bytes) async {
+  try {
+    final ctx = web.OfflineAudioContext(
+      web.OfflineAudioContextOptions(
+        numberOfChannels: 1,
+        length: 1,
+        sampleRate: 44100,
+      ),
+    );
+    final copy = bytes.sublist(0);
+    final audioBufferPromise = ctx.decodeAudioData(copy.buffer.toJS);
+    final audioBuffer = await audioBufferPromise.toDart;
+    final numChannels = audioBuffer.numberOfChannels;
+    final numFrames = audioBuffer.length;
+    final sampleRate = audioBuffer.sampleRate.toInt();
+    final interleaved = Float32List(numFrames * numChannels);
+    for (var c = 0; c < numChannels; c++) {
+      final channelData = audioBuffer.getChannelData(c).toDart;
+      for (var i = 0; i < numFrames; i++) {
+        interleaved[i * numChannels + c] = channelData[i];
+      }
+    }
+    return (
+      sampleRate: sampleRate,
+      channels: numChannels,
+      samples: interleaved,
+    );
+  } catch (e) {
+    return null;
+  }
+}

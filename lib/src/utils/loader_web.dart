@@ -20,8 +20,15 @@ class SoLoudLoader {
   /// To reflect [SoLoudLoader] for `io`.
   bool automaticCleanup = false;
 
+  bool _isInitialized = false;
+
+  /// Whether the loader has been initialized.
+  bool get isInitialized => _isInitialized;
+
   /// To reflect [SoLoudLoader] for `io`.
-  Future<void> initialize() async {}
+  Future<void> initialize() async {
+    _isInitialized = true;
+  }
 
   /// Loads the asset with [key] (e.g. `assets/sound.mp3`), and return
   /// the file byte as `Uint8List` to be passed to `SoLoud.LoadMem` for
@@ -39,6 +46,7 @@ class SoLoudLoader {
     String key,
     LoadMode mode, {
     AssetBundle? assetBundle,
+    bool autoDispose = false,
   }) async {
     final ByteData byteData;
     final bundle = assetBundle ?? rootBundle;
@@ -54,10 +62,24 @@ class SoLoudLoader {
       rethrow;
     }
 
-    final buffer = byteData.buffer
-        .asUint8List(byteData.offsetInBytes, byteData.lengthInBytes);
-    final newAudioSource = SoLoud.instance.loadMem(key, buffer, mode: mode);
-    return newAudioSource;
+    final buffer = byteData.buffer.asUint8List(
+      byteData.offsetInBytes,
+      byteData.lengthInBytes,
+    );
+    try {
+      final newAudioSource = await SoLoud.instance.loadMem(
+        key,
+        buffer,
+        mode: mode,
+        autoDispose: autoDispose,
+      );
+      return newAudioSource;
+    } on SoLoudNotInitializedException {
+      throw SoLoudNotInitializedException(
+        "SoLoud was deinitialized or disposed while staging asset '$key' into "
+        'memory.',
+      );
+    }
   }
 
   /// Optionally, you can provide your own [httpClient]. This is a good idea
@@ -71,6 +93,7 @@ class SoLoudLoader {
     String url,
     LoadMode mode, {
     http.Client? httpClient,
+    bool autoDispose = false,
   }) async {
     final uri = Uri.parse(url);
 
@@ -96,9 +119,23 @@ class SoLoudLoader {
       rethrow;
     }
 
-    final buffer = byteData.buffer
-        .asUint8List(byteData.offsetInBytes, byteData.lengthInBytes);
-    final newAudioSource = SoLoud.instance.loadMem(url, buffer);
-    return newAudioSource;
+    final buffer = byteData.buffer.asUint8List(
+      byteData.offsetInBytes,
+      byteData.lengthInBytes,
+    );
+    try {
+      final newAudioSource = await SoLoud.instance.loadMem(
+        url,
+        buffer,
+        mode: mode,
+        autoDispose: autoDispose,
+      );
+      return newAudioSource;
+    } on SoLoudNotInitializedException {
+      throw SoLoudNotInitializedException(
+        'SoLoud was deinitialized or disposed while downloading and staging '
+        "url '$url' into memory.",
+      );
+    }
   }
 }

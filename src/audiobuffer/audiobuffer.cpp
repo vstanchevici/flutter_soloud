@@ -1,40 +1,138 @@
 #include <mutex>
-#include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
+#include <thread>
+#include <chrono>
 
-// #if defined(_IS_WIN_)
-// #define NOMINMAX
-// #include <windows.h>
-// #include <windows.h>
-// #endif
-
-#include "../common.h"
+#include "../soloud_common.h"
 #include "audiobuffer.h"
 #include "metadata_ffi.h"
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>
+#ifdef MA_ENABLE_AUDIO_WORKLETS
+#include <emscripten/threading.h>
+#include <emscripten/webaudio.h>
+#endif
 #endif
 
 // TODO: readSamplesFromBuffer as for waveform
 
 namespace SoLoud {
-std::mutex buffer_lock_mutex;
 std::mutex check_buffer_mutex;
+
+#ifdef MA_ENABLE_AUDIO_WORKLETS
+// Main-thread entry points for the stream event callbacks. On the
+// multi-threaded (AudioWorklet) build the callbacks can fire from the
+// AudioWorklet rendering thread, which has no `window` and where
+// MAIN_THREAD_ASYNC_EM_ASM would execute in the worklet's own JS realm
+// (ReferenceError: window is not defined). The callers route through
+// emscripten_audio_worklet_post_function_* so these run on the main
+// browser thread.
+
+// Static slot for the metadata struct: heap-allocating it on the audio
+// thread could take the contended heap lock, and a futex wait there aborts
+// the program. Metadata callbacks are rare (once per stream open), so a
+// last-wins static slot is fine.
+static AudioMetadataFFI gBsMetadataSlot;
+
+static void bsOnMetadataMainThread(int metadataPtr, int soundHash)
+{
+  EM_ASM(
+      {
+        var functionName = "dartOnMetadataCallback_" + $1;
+        if (typeof window[functionName] === "function") {
+          window[functionName]($0); // Call it with the pointer
+        } else {
+        }
+      },
+      metadataPtr, soundHash);
+}
+
+static void bsOnBufferingMainThread(int isBuffering, int handle, double time,
+                                    int soundHash)
+{
+  EM_ASM(
+      {
+        var functionName = "dartOnBufferingCallback_" + $3;
+        if (typeof window[functionName] === "function") {
+          var buffering = $0 == 1 ? true : false;
+          window[functionName](buffering, $1, $2); // Call it
+        } else {
+          console.log("EM_ASM 'dartOnBufferingCallback_$hash' not found.");
+        }
+      },
+      isBuffering, handle, time, soundHash);
+}
+#endif // MA_ENABLE_AUDIO_WORKLETS
+
+static void clearPlanarBuffer(float *buffer, unsigned int frames,
+                              unsigned int stride, unsigned int channels) {
+  if (buffer == nullptr || frames == 0 || channels == 0) {
+    return;
+  }
+  for (unsigned int channel = 0; channel < channels; ++channel) {
+    memset(buffer + channel * stride, 0, sizeof(float) * frames);
+  }
+}
 
 BufferStreamInstance::BufferStreamInstance(BufferStream *aParent) {
   mParent = aParent;
   mOffset = 0;
   samplerateAlreadySet = false;
+  if (mParent != nullptr && mParent->autoTypeSamplerate != 0.f) {
+    mBaseSamplerate = mParent->autoTypeSamplerate;
+    mSamplerate = mParent->autoTypeSamplerate;
+    mChannels = mParent->autoTypeChannels;
+    samplerateAlreadySet = true;
+  }
 }
 
 BufferStreamInstance::~BufferStreamInstance() {}
 
+// ###### flutter_soloud local patch (retroactive re-mix) ######
+class BufferStreamSourceStateSnapshot : public SoLoud::SourceStateSnapshot {
+public:
+  unsigned int mOffset;
+  bool samplerateAlreadySet;
+};
+
+SoLoud::SourceStateSnapshot *BufferStreamInstance::captureSourceState() {
+  // Only PRESERVED streams keep the consumed data around to re-read.
+  if (mParent == nullptr ||
+      mParent->mBuffer.bufferingType != BufferingType::PRESERVED) {
+    return nullptr;
+  }
+  auto *s = new BufferStreamSourceStateSnapshot();
+  s->mOffset = mOffset;
+  s->samplerateAlreadySet = samplerateAlreadySet;
+  return s;
+}
+
+void BufferStreamInstance::restoreSourceState(
+    SoLoud::SourceStateSnapshot *aState) {
+  auto *s = static_cast<BufferStreamSourceStateSnapshot *>(aState);
+  if (s == nullptr) {
+    return;
+  }
+  mOffset = s->mOffset;
+  samplerateAlreadySet = s->samplerateAlreadySet;
+}
+
+
 unsigned int BufferStreamInstance::getAudio(float *aBuffer,
                                             unsigned int aSamplesToRead,
                                             unsigned int aBufferSize) {
-  std::lock_guard<std::mutex> lock(buffer_lock_mutex);
+  if (aBuffer == nullptr || aSamplesToRead == 0) {
+    return 0;
+  }
+
+  // Check if parent is still valid before accessing it
+  if (mParent == nullptr || !mParent->isValid()) {
+    clearPlanarBuffer(aBuffer, aSamplesToRead, aBufferSize, mChannels);
+    return 0;
+  }
+
+  std::lock_guard<std::recursive_mutex> lock(mParent->mBuffer.bufferMutex);
 
   // When using BufferType::AUTO, samplerate and channels are got from the
   // stream. Hence we need to update them regardless of how are set by
@@ -45,49 +143,85 @@ unsigned int BufferStreamInstance::getAudio(float *aBuffer,
     mSamplerate = mParent->autoTypeSamplerate;
     mChannels = mParent->autoTypeChannels;
     samplerateAlreadySet = true;
+  } else if (mChannels == 0 && mParent->mChannels > 0) {
+    mChannels = mParent->mChannels;
   }
 
-  // This happens when using RELEASED buffer type
-  if (mParent->mBuffer.getFloatsBufferSize() == 0) {
-    memset(aBuffer, 0, sizeof(float) * aSamplesToRead);
-    // Calculate mStreamPosition based on mOffset
-    mStreamPosition = mOffset / (float)(mBaseSamplerate * mChannels);
-
-    // This is not nice to do in the audio callback, but I didn't
-    // find a better way to get lenght and pause the sound and the
-    // `checkBuffering` function is fast enough.
-    if (!mParent->mIsBuffering) {
-      mParent->mThePlayer->soloud.unlockAudioMutex_internal();
-      mParent->checkBuffering(0);
-      mParent->mThePlayer->soloud.lockAudioMutex_internal();
-    }
+  if (mChannels == 0) {
+    clearPlanarBuffer(aBuffer, aSamplesToRead, aBufferSize, mChannels);
     return 0;
   }
 
-  unsigned int bufferSize = mParent->mBuffer.getFloatsBufferSize();
-  float *buffer = reinterpret_cast<float *>(mParent->mBuffer.buffer.data());
-  int samplesToRead = aSamplesToRead;
-  if (mOffset + (unsigned int)samplesToRead * mChannels > bufferSize) {
-    samplesToRead = (bufferSize - mOffset) / mChannels;
+  const unsigned int bufferSize =
+      static_cast<unsigned int>(mParent->mBuffer.getFloatsBufferSize());
+  int samplesToRead = 0;
+  if (mOffset < bufferSize) {
+    const unsigned int endOffset = mOffset + aSamplesToRead * mChannels;
+    if (endOffset <= bufferSize) {
+      samplesToRead = static_cast<int>(aSamplesToRead);
+    } else {
+      samplesToRead = static_cast<int>((bufferSize - mOffset) / mChannels);
+    }
   }
+
+  // No decoded samples available to play: zero the output and update the
+  // stream position. When the stream has not ended, auto-pause if buffering
+  // is needed.
   if (samplesToRead <= 0) {
-    memset(aBuffer, 0, sizeof(float) * aSamplesToRead * mChannels);
-    // Calculate mStreamPosition based on mOffset
-    mStreamPosition = mOffset / (float)(mBaseSamplerate * mChannels);
-
-    // This is not nice to do in the audio callback, but I didn't
-    // find a better way to get lenght and pause the sound and the
-    // `chakeBuffering` function is fast enough.
-    if (!mParent->mIsBuffering) {
-      mParent->mThePlayer->soloud.unlockAudioMutex_internal();
-      mParent->checkBuffering(0);
-      mParent->mThePlayer->soloud.lockAudioMutex_internal();
+    clearPlanarBuffer(aBuffer, aSamplesToRead, aBufferSize, mChannels);
+    if (mParent->mBuffer.bufferingType == BufferingType::PRESERVED) {
+      mStreamPosition = (mBaseSamplerate > 0.0f && mChannels > 0)
+                            ? mOffset / (mBaseSamplerate * mChannels)
+                            : 0.0;
+    } else {
+      mStreamPosition = 0;
     }
+
+    if (!mParent->dataIsEnded && mParent->mBufferingTimeNeeds > 0) {
+      const bool wasPaused = (mFlags & AudioSourceInstance::PAUSED) != 0;
+      mFlags |= AudioSourceInstance::PAUSED;
+      mPauseScheduler.mActive = 0;
+
+      if (!wasPaused) {
+        if (mParent->mThePlayer != nullptr) {
+          mParent->mThePlayer->soloud.mActiveVoiceDirty = true;
+          mParent->mThePlayer->soloud.mVoiceInactiveCallbackPending = true;
+        }
+
+        mParent->mIsBuffering = true;
+
+        SoLoud::handle handle = 0;
+        if (mParent->mParent != nullptr && !mParent->mParent->handle.empty()) {
+          for (size_t i = 0; i < mParent->mParent->handle.size(); ++i) {
+            if ((mParent->mParent->handle[i].handle >> 12) == this->mPlayIndex) {
+              handle = mParent->mParent->handle[i].handle;
+              mParent->mParent->handle[i].isUserPaused = false;
+              break;
+            }
+          }
+          if (handle == 0) {
+            handle = mParent->mParent->handle[0].handle;
+            mParent->mParent->handle[0].isUserPaused = false;
+          }
+        }
+
+        mParent->callOnBufferingCallback(true, handle, mStreamPosition);
+      }
+    }
+
     return 0;
   }
 
-  if (samplesToRead != aSamplesToRead) {
-    memset(aBuffer, 0, sizeof(float) * aSamplesToRead * mChannels);
+  // Zero any frames we won't fill, then copy the active frames.
+  if (samplesToRead < static_cast<int>(aSamplesToRead)) {
+    clearPlanarBuffer(aBuffer, aSamplesToRead, aBufferSize, mChannels);
+  }
+
+  float *buffer = reinterpret_cast<float *>(mParent->mBuffer.buffer.data() +
+                                            mParent->mBuffer.getReadOffset());
+  if (buffer == nullptr) {
+    clearPlanarBuffer(aBuffer, aSamplesToRead, aBufferSize, mChannels);
+    return 0;
   }
 
   if (mChannels == 1) {
@@ -99,35 +233,29 @@ unsigned int BufferStreamInstance::getAudio(float *aBuffer,
     // So, if 1024 samples are requested from a stereo audio source, the first
     // 1024 floats should be for the first channel, and the next 1024 samples
     // should be for the second channel.
-    unsigned int i, j;
-    for (j = 0; j < mChannels; j++) {
-      for (i = 0; i < samplesToRead; i++) {
-        aBuffer[j * aSamplesToRead + i] = buffer[mOffset + i * mChannels + j];
+    for (unsigned int ch = 0; ch < mChannels; ++ch) {
+      for (int i = 0; i < samplesToRead; ++i) {
+        aBuffer[ch * aBufferSize + i] = buffer[mOffset + i * mChannels + ch];
       }
     }
   }
 
-  unsigned int totalBytesRead = samplesToRead * mChannels * sizeof(float);
-  size_t samplesRemoved = mParent->mBuffer.removeData(totalBytesRead);
-
-  // Update stream position regardless of buffering type
-  mStreamTime += samplesToRead / (float)mBaseSamplerate;
+  const unsigned int totalBytesRead =
+      samplesToRead * mChannels * sizeof(float);
+  const size_t samplesRemoved = mParent->mBuffer.removeData(totalBytesRead);
 
   // If buffering type is RELEASED, adjust mSampleCount and don't increment
-  // mOffset
+  // mOffset.
   if (mParent->mBuffer.bufferingType == BufferingType::RELEASED) {
-    mParent->mSampleCount -=
-        samplesRemoved / mParent->mPCMformat.bytesPerSample;
-    // For RELEASED type, streamPosition is always at the start of the remaining
-    // buffer
-    mStreamPosition = 0;
+    mParent->mSampleCount -= samplesRemoved;
     mParent->mBytesConsumed += totalBytesRead;
+    mStreamPosition = 0;
   } else {
     mOffset += samplesToRead * mChannels;
-    // For PRESERVED type, streamPosition advances with the offset
-    // mStreamPosition = mOffset / (float)(sizeof(float) * mBaseSamplerate *
-    // mChannels);
-    mStreamPosition = mOffset / (float)(mBaseSamplerate * mChannels);
+    // For PRESERVED type, streamPosition advances with the offset.
+    mStreamPosition = (mBaseSamplerate > 0.0f && mChannels > 0)
+                          ? mOffset / (mBaseSamplerate * mChannels)
+                          : 0.0;
   }
 
   return samplesToRead;
@@ -135,35 +263,30 @@ unsigned int BufferStreamInstance::getAudio(float *aBuffer,
 
 result BufferStreamInstance::seek(double aSeconds, float *mScratch,
                                   unsigned int mScratchSize) {
+  (void)mScratch;
+  (void)mScratchSize;
   if (aSeconds <= 0.0) {
     rewind();
     return SO_NO_ERROR;
+  }
+  // Check parent validity before accessing
+  if (mParent == nullptr || !mParent->isValid()) {
+    return INVALID_PARAMETER;
   }
   if (mParent->mBuffer.bufferingType == BufferingType::RELEASED) {
     // Seeking not supported in RELEASED mode since data is discarded
     // TODO: Support seeking forward in RELEASED mode
     return INVALID_PARAMETER;
   }
-  double offset = aSeconds - mStreamPosition;
-  if (offset <= 0) {
-    if (rewind() != SO_NO_ERROR) {
-      // can't do generic seek backwards unless we can rewind.
-      return NOT_IMPLEMENTED;
-    }
-    offset = aSeconds;
-  }
-  long samples_to_discard = (long)floor(mBaseSamplerate * offset * mChannels);
 
-  while (samples_to_discard) {
-    long samples = mScratchSize / mChannels;
-    if (samples > samples_to_discard)
-      samples = samples_to_discard;
-    getAudio(mScratch, samples, samples);
-    samples_to_discard -= samples;
-  }
-  int pos = (int)floor(mBaseSamplerate * mChannels * aSeconds);
-  mOffset = pos;
-  mStreamPosition = float(pos) / (float)(mBaseSamplerate * mChannels);
+  // For PRESERVED mode the decoded buffer is kept from the start, so we can
+  // jump directly to the target sample. Align the offset down to a whole
+  // frame: getAudio() consumes data in units of `mChannels` floats, so an
+  // unaligned offset would leave an unplayable sub-frame remainder at the
+  // end of the buffer and the voice could never reach its end.
+  const int pos = static_cast<int>(floor(mBaseSamplerate * mChannels * aSeconds));
+  mOffset = mChannels > 0 ? pos - (pos % static_cast<int>(mChannels)) : pos;
+  mStreamPosition = static_cast<float>(mOffset) / (mBaseSamplerate * mChannels);
   return SO_NO_ERROR;
 }
 
@@ -174,17 +297,30 @@ result BufferStreamInstance::rewind() {
 }
 
 bool BufferStreamInstance::hasEnded() {
-  auto b = mParent->mBuffer.bufferingType == BufferingType::PRESERVED;
-  // PRESERVED
-  if (b && mParent->dataIsEnded && mOffset >= mParent->mSampleCount) {
-    return 1;
-  } else
-    // RELEASED
-    if (!b && mParent->dataIsEnded &&
-        mParent->mBuffer.getFloatsBufferSize() == 0) {
-      return 1;
-    }
-  return 0;
+  // Check parent validity before accessing
+  if (mParent == nullptr || !mParent->isValid()) {
+    return true;  // Parent destroyed or invalid, consider ended
+  }
+  if (!mParent->dataIsEnded) {
+    return false;
+  }
+  if (mParent->mBuffer.bufferingType == BufferingType::PRESERVED) {
+    // `mOffset` advances in whole frames (`mChannels` floats at a time) and
+    // getAudio() cannot play a sub-frame remainder, so being within one
+    // frame of the end counts as ended. This covers two cases:
+    // - `mSampleCount` overshooting the actual decoded data (for compressed
+    //   formats it comes from the decoder's frame-count estimate, e.g.
+    //   drmp3_get_pcm_frame_count, which may exceed the frames the decoder
+    //   really yields: encoder delay/padding, truncated final frame);
+    // - a buffer whose float count is not a multiple of `mChannels`.
+    // Without this, a voice reaching such a buffer's end underruns forever
+    // and is never stopped.
+    const unsigned int slack = mChannels > 0 ? mChannels - 1 : 0;
+    return mOffset + slack >= mParent->mSampleCount ||
+           mOffset + slack >= mParent->mBuffer.getFloatsBufferSize();
+  }
+  // RELEASED
+  return mParent->mBuffer.getFloatsBufferSize() == 0;
 }
 
 // //////////////////////////////////////////////////////////////
@@ -193,11 +329,21 @@ bool BufferStreamInstance::hasEnded() {
 // //////////////////////////////////////////////////////////////
 // //////////////////////////////////////////////////////////////
 
-BufferStream::BufferStream() {}
+BufferStream::BufferStream() : mIsDestroyed(false) {}
+
+void BufferStream::stopBackgroundDecode() {
+#ifndef __EMSCRIPTEN__
+  mStopBackgroundDecode.store(true);
+  if (mBackgroundDecodeThread.joinable()) {
+    mBackgroundDecodeThread.join();
+  }
+  mStopBackgroundDecode.store(false);
+#endif
+}
 
 BufferStream::~BufferStream() {
-  // stop();
-  // resetBuffer();
+  mIsDestroyed.store(true);
+  stopBackgroundDecode();
 }
 
 PlayerErrors BufferStream::setBufferStream(
@@ -209,12 +355,6 @@ PlayerErrors BufferStream::setBufferStream(
   if (maxBufferSize % (pcmFormat.channels * sizeof(float)) != 0)
     maxBufferSize -= maxBufferSize % (pcmFormat.channels * sizeof(float));
 
-  // Force OPUS to AUTO since Mp3, Ogg Opus and Ogg Vorbis are auto detected
-  // There is no more need to use BufferType::OPUS
-  if (pcmFormat.dataType == BufferType::OPUS)
-    pcmFormat.dataType = BufferType::AUTO;
-
-  mInstance = nullptr;
   autoTypeChannels = 0;
   autoTypeSamplerate = 0.f;
   mBytesReceived = 0;
@@ -230,14 +370,20 @@ PlayerErrors BufferStream::setBufferStream(
   mPCMformat.dataType = pcmFormat.dataType;
   mBuffer.clear();
   mBuffer.setSizeInBytes(maxBufferSize);
+  mMaxBufferSize = maxBufferSize;
   mBufferingTimeNeeds = bufferingTimeNeeds;
   mChannels = pcmFormat.channels;
   mBaseSamplerate = (float)pcmFormat.sampleRate;
-  mOnBufferingCallback = onBufferingCallback;
-  mOnMetadataCallback = onMetadataCallback;
+  mOnBufferingCallback.store(onBufferingCallback);
+  mOnMetadataCallback.store(onMetadataCallback);
+  // Recorded with the callables: the gate retires by generation, so a
+  // registration made after a retirement must carry the new one.
+  mDartCallbackGeneration.store(dart_callbacks::currentGeneration(),
+                                std::memory_order_release);
   buffer = std::vector<unsigned char>();
   mBuffer.setBufferType(bufferingType);
   mIsBuffering = true;
+  mIsDestroyed = false;
   mIcyMetaInt =
       16000; // for mp3 streaming audio only. Most online streaming use 16000
 
@@ -245,22 +391,25 @@ PlayerErrors BufferStream::setBufferStream(
     streamDecoder = std::make_unique<StreamDecoder>();
   }
 
-#if defined(NO_OPUS_OGG_LIBS)
-  if (pcmFormat.dataType == BufferType::OPUS) {
-    return PlayerErrors::failedToCreateOpusDecoder;
-  }
-#endif
-
   return PlayerErrors::noError;
 }
 
 void BufferStream::resetBuffer() {
-  std::lock_guard<std::mutex> lock(buffer_lock_mutex);
+  stopBackgroundDecode();
   buffer.clear();
   mBuffer.clear();
   mSampleCount = 0;
   mBytesReceived = 0;
   mUncompressedBytesReceived = 0;
+  mBytesConsumed = 0;
+  dataIsEnded = false;
+  mIsBuffering = true;
+  autoTypeChannels = 0;
+  autoTypeSamplerate = 0.f;
+  if (streamDecoder) {
+    streamDecoder = std::make_unique<StreamDecoder>();
+    streamDecoder->setBufferIcyMetaInt(mIcyMetaInt);
+  }
 
   for (int i = 0; i < mParent->handle.size(); i++) {
     mThePlayer->soloud.seek(mParent->handle[i].handle, 0.0f);
@@ -276,20 +425,86 @@ void BufferStream::setDataIsEnded() {
     streamDecoder->setDataEnded();
   }
 
-  // Trigger a final decode pass to flush any remaining data.
-  // This is needed even if buffer.size() is 0, because the underlying
-  // decoder (e.g., dr_mp3) may have data in its internal buffer that
-  // hasn't been decoded yet.
+  // Trigger an initial bounded decode pass (up to 4096 * 4 samples) on the calling thread.
   addData(nullptr, 0, true);
 
   buffer.clear();
   dataIsEnded = true;
   checkBuffering(0);
+
+#if defined(__EMSCRIPTEN__)
+  // On Web, drain any remaining pending data from the decoder.
+  while (streamDecoder && streamDecoder->hasPendingData()) {
+    int sampleRate = (mThePlayer != nullptr) ? mThePlayer->mSampleRate : 44100;
+    int channels = (mThePlayer != nullptr) ? mThePlayer->mChannels : 2;
+    std::vector<unsigned char> emptyBuf;
+    auto [decoded, error] = streamDecoder->decode(
+        emptyBuf, &sampleRate, &channels, nullptr, 0);
+
+    if (!decoded.empty()) {
+      bool allDataAdded = false;
+      size_t bytesWritten = 0;
+      {
+        std::lock_guard<std::recursive_mutex> lock(mBuffer.bufferMutex);
+        bytesWritten = mBuffer.addData(BufferType::PCM_F32LE, decoded.data(),
+                                       decoded.size(), &allDataAdded) *
+                       sizeof(float);
+      }
+      checkBuffering(static_cast<unsigned int>(bytesWritten));
+      mUncompressedBytesReceived += bytesWritten;
+      mSampleCount += static_cast<unsigned int>(bytesWritten / sizeof(float));
+    } else {
+      break;
+    }
+  }
+#else
+  // If the decoder has remaining buffered data (e.g. Android MediaCodec with
+  // unthrottled incoming chunks), decode them in a background worker thread
+  // so Flutter's main UI thread is NEVER blocked!
+  if (streamDecoder && streamDecoder->hasPendingData()) {
+    stopBackgroundDecode();
+    mBackgroundDecodeThread = std::thread([this]() {
+      while (!mIsDestroyed.load() && !mStopBackgroundDecode.load() &&
+             streamDecoder && streamDecoder->hasPendingData()) {
+        int sampleRate = (mThePlayer != nullptr) ? mThePlayer->mSampleRate : 44100;
+        int channels = (mThePlayer != nullptr) ? mThePlayer->mChannels : 2;
+        std::vector<unsigned char> emptyBuf;
+        auto [decoded, error] = streamDecoder->decode(
+            emptyBuf, &sampleRate, &channels, nullptr, 4096 * 4);
+
+        if (!decoded.empty()) {
+          bool allDataAdded = false;
+          size_t bytesWritten = 0;
+          {
+            std::lock_guard<std::recursive_mutex> lock(mBuffer.bufferMutex);
+            bytesWritten = mBuffer.addData(BufferType::PCM_F32LE, decoded.data(),
+                                           decoded.size(), &allDataAdded) *
+                           sizeof(float);
+          }
+          checkBuffering(static_cast<unsigned int>(bytesWritten));
+          mUncompressedBytesReceived += bytesWritten;
+          mSampleCount += static_cast<unsigned int>(bytesWritten / sizeof(float));
+
+          if (!allDataAdded) {
+            // Buffer capacity reached; wait for playback to read and free space
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+          }
+        } else {
+          // If decoder didn't produce samples in this pass (waiting on codec output),
+          // yield briefly to avoid busy-spinning
+          std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+      }
+    });
+  }
+#endif
 }
 
 void BufferStream::setBufferIcyMetaInt(int icyMetaInt) {
   mIcyMetaInt = icyMetaInt;
-  streamDecoder->setBufferIcyMetaInt(icyMetaInt);
+  if (streamDecoder) {
+    streamDecoder->setBufferIcyMetaInt(icyMetaInt);
+  }
 }
 
 PlayerErrors BufferStream::addData(const void *aData, unsigned int aDataLen,
@@ -299,7 +514,7 @@ PlayerErrors BufferStream::addData(const void *aData, unsigned int aDataLen,
   }
 
   size_t bytesWritten = 0;
-  bool allDataAdded = -1;
+  bool allDataAdded = false;
   int32_t bufferDataToAdd = 0;
 
   if (!dontAdd) {
@@ -307,16 +522,16 @@ PlayerErrors BufferStream::addData(const void *aData, unsigned int aDataLen,
                   static_cast<const unsigned char *>(aData) + aDataLen);
     mBytesReceived += aDataLen;
     // For PCM data we must align the data to the bytes per sample.
-    if (!(mPCMformat.dataType == BufferType::AUTO)) {
+    if (mPCMformat.dataType != BufferType::AUTO) {
       int alignment = mPCMformat.bytesPerSample * mPCMformat.channels;
       bufferDataToAdd = (int)(buffer.size() / alignment) * alignment;
     } else {
       // Performing some buffering. We need some data to be added expecially
       // when using opus or mp3.
-      if (buffer.size() > 1024 * 32) // 32 KB of data.
+      if (buffer.size() > 1024 * 4 || (streamDecoder && streamDecoder->hasPendingData()))
       {
         // When using opus,ogg or mp3 we don't need to align.
-        bufferDataToAdd = buffer.size();
+        bufferDataToAdd = static_cast<int32_t>(buffer.size());
       } else {
         // Return if there is not enough data to add.
         return PlayerErrors::noError;
@@ -324,7 +539,7 @@ PlayerErrors BufferStream::addData(const void *aData, unsigned int aDataLen,
     }
 
   } else {
-    bufferDataToAdd = buffer.size();
+    bufferDataToAdd = static_cast<int32_t>(buffer.size());
   }
 
   // It's time to decode the data already stored in the buffer
@@ -335,22 +550,30 @@ PlayerErrors BufferStream::addData(const void *aData, unsigned int aDataLen,
     // settings and the AudioSource will be set to use them. For the mp3 this
     // AudioSource will impose the mp3 settings (the engine will convert to its
     // settings).
+    const size_t maxSamples = dontAdd ? (4096 * 4) : 0;
     auto [decoded, error] = streamDecoder->decode(
         buffer, &sampleRate, &channels, [&](AudioMetadata meta) {
           //   meta.debug();
           if (this->mOnMetadataCallback != nullptr)
             this->callOnMetadataCallback(meta);
-        });
+        }, maxSamples);
 
     // Handle decoder errors
     switch (error) {
     case DecoderError::FormatNotSupported:
+      fprintf(stderr, "[flutter_soloud] addData: Audio format not supported on this platform.\n");
       return PlayerErrors::audioFormatNotSupported;
-    case DecoderError::NoOpusOggLibs:
-      return PlayerErrors::opusOggVorbisLibsNotFound;
+    case DecoderError::NoXiphLibs:
+      fprintf(stderr, "[flutter_soloud] addData: Xiph libraries (Ogg/Vorbis/Opus) not found.\n");
+      return PlayerErrors::xiphLibsNotFound;
     case DecoderError::FailedToCreateDecoder:
+      fprintf(stderr, "[flutter_soloud] addData: Failed to create audio decoder.\n");
       return PlayerErrors::failedToCreateOpusDecoder;
     case DecoderError::ErrorReadingOggOpusPage:
+      fprintf(stderr, "[flutter_soloud] addData: Failed to decode audio packet (corrupted or truncated page).\n");
+      return PlayerErrors::failedToDecodeOpusPacket;
+    case DecoderError::CodecError:
+      fprintf(stderr, "[flutter_soloud] addData: Platform audio codec failed while decoding.\n");
       return PlayerErrors::failedToDecodeOpusPacket;
     default:
       break;
@@ -382,18 +605,20 @@ PlayerErrors BufferStream::addData(const void *aData, unsigned int aDataLen,
     bytesWritten = mBuffer.addData(mPCMformat.dataType, buffer.data(),
                                    bufferDataToAdd / mPCMformat.bytesPerSample,
                                    &allDataAdded) *
-                   mPCMformat.bytesPerSample;
-    // Remove the processed data from the buffer
+                   sizeof(float);
+    // Remove only the source bytes that were actually converted and written.
     if (bytesWritten > 0) {
-      buffer.erase(buffer.begin(), buffer.begin() + bufferDataToAdd);
+      const size_t samplesWritten = bytesWritten / sizeof(float);
+      const size_t sourceBytesConsumed =
+          samplesWritten * mPCMformat.bytesPerSample;
+      buffer.erase(buffer.begin(), buffer.begin() + sourceBytesConsumed);
     }
   }
 
-  if (mIsBuffering)
-    checkBuffering(bytesWritten);
+  checkBuffering(static_cast<unsigned int>(bytesWritten));
   mUncompressedBytesReceived += bytesWritten;
 
-  mSampleCount += bytesWritten / mPCMformat.bytesPerSample;
+  mSampleCount += static_cast<unsigned int>(bytesWritten / sizeof(float));
 
   // data has been added to the buffer, but not all because reached its full
   // capacity. So mark this stream as ended and no more data can be added.
@@ -410,54 +635,91 @@ PlayerErrors BufferStream::addData(const void *aData, unsigned int aDataLen,
 void BufferStream::checkBuffering(unsigned int afterAddingBytesCount) {
   std::lock_guard<std::mutex> lock(check_buffer_mutex);
 
+  if (mThePlayer == nullptr || mParent == nullptr) return;
+  if (mBaseSamplerate == 0.0f || mChannels == 0) return;
+
   // If a handle reaches the end and data is not ended, we have to wait for it
-  // has enough data to reach [TIME_FOR_BUFFERING] and restart playing it.
+  // to have enough data to reach [mBufferingTimeNeeds] and restart playing it.
   SoLoud::time currBufferTime = getLength();
   SoLoud::time addedDataTime =
       (afterAddingBytesCount / sizeof(float)) /
       (mBaseSamplerate * mChannels);
+  SoLoud::time totalDataTime = currBufferTime + addedDataTime;
 
-  for (int i = 0; i < mParent->handle.size(); i++) {
+  for (size_t i = 0; i < mParent->handle.size(); i++) {
     SoLoud::handle handle = mParent->handle[i].handle;
+    if (!mThePlayer->isValidHandle(handle)) continue;
+
     SoLoud::time pos = mBuffer.bufferingType == BufferingType::RELEASED
                            ? getStreamTimeConsumed()
                            : mThePlayer->getPosition(handle);
-    // SoLoud::time pos = mThePlayer->getPosition(handle);
     bool isPaused = mThePlayer->getPause(handle);
+    SoLoud::time availableAhead =
+        totalDataTime >= pos ? (totalDataTime - pos) : 0.0;
 
-    // printf("checkBuffering -- bufferLength: %lf, currBufferTime: %lf\n",
-    // 	bufferLength, currBufferTime);
+    // This handle needs to wait for [mBufferingTimeNeeds]. Pause it.
+    // Pause when:
+    // 1) The play position has reached the end of the data that was already
+    //    buffered before this addData() call, OR
+    // 2) The stream is currently buffering and does not yet have enough audio
+    //    ahead of the playhead.
+    const bool needsBuffering =
+        !dataIsEnded && (mBufferingTimeNeeds > 0) &&
+        (availableAhead < mBufferingTimeNeeds) &&
+        (pos >= currBufferTime || mIsBuffering);
 
-    // This handle needs to wait for [TIME_FOR_BUFFERING]. Pause it.
-    if (pos >= currBufferTime + addedDataTime && !isPaused) {
-      mParent->handle[i].bufferingTime = currBufferTime;
-      mThePlayer->setPause(handle, true);
+    if (needsBuffering && !isPaused) {
+      mParent->handle[i].bufferingTime = totalDataTime;
+      // This is an automatic buffering pause, so the user-paused flag should
+      // not prevent a future buffering unpause.
+      mParent->handle[i].isUserPaused = false;
+      mThePlayer->setPause(handle, true, false);
       isPaused = true;
-      callOnBufferingCallback(true, handle, currBufferTime);
-    } else
-    // This handle has reached [TIME_FOR_BUFFERING]. Unpause it.
-	// Only unpause when buffer covers playback position + margin,
-	// not just when new data >= margin (which caused play/pause toggling
-	// when seeking beyond buffered data)
-	if (currBufferTime + addedDataTime >= pos + mBufferingTimeNeeds && isPaused){
-        mThePlayer->setPause(handle, false);
+      mIsBuffering = true;
+      callOnBufferingCallback(true, handle, totalDataTime);
+    } else if (availableAhead >= mBufferingTimeNeeds) {
+      // This handle has reached [mBufferingTimeNeeds]. Unpause it if it was
+      // paused by the buffering mechanism.
+      // Also respect a user-initiated pause: if the user pressed pause, do not
+      // automatically resume even when enough data is buffered.
+      if (isPaused && !mParent->handle[i].isUserPaused) {
+        mParent->handle[i].bufferingTime = totalDataTime;
+        mThePlayer->setPause(handle, false, false);
         isPaused = false;
-        mParent->handle[i].bufferingTime = currBufferTime + addedDataTime;
-        callOnBufferingCallback(false, handle, currBufferTime);
+        mIsBuffering = false;
+        callOnBufferingCallback(false, handle, totalDataTime);
+      } else if (isPaused && mParent->handle[i].isUserPaused) {
+        if (mIsBuffering) {
+          mParent->handle[i].bufferingTime = totalDataTime;
+          mIsBuffering = false;
+          callOnBufferingCallback(false, handle, totalDataTime);
+        }
+      } else if (!isPaused && mIsBuffering) {
+        mIsBuffering = false;
       }
+    }
+
     // If data is ended and the handle is paused, unpause it to listen to the
-    // rest of the data.
-    if (dataIsEnded && isPaused) {
-      mThePlayer->setPause(handle, false);
+    // rest of the data. This also clears the user-paused flag so that a
+    // user-paused stream drains its remaining buffer when the stream ends.
+    if (dataIsEnded && isPaused && !mParent->handle[i].isUserPaused) {
+      mThePlayer->setPause(handle, false, false);
       isPaused = false;
       mParent->handle[i].bufferingTime = MAX_DOUBLE;
-      callOnBufferingCallback(false, handle, currBufferTime);
+      callOnBufferingCallback(false, handle, totalDataTime);
     }
   }
 }
 
 void BufferStream::callOnMetadataCallback(AudioMetadata &metadata) {
-  if (mOnMetadataCallback != nullptr) {
+  // Gated, not merely null-checked: a bare load-then-call can invoke a
+  // callable whose isolate has gone away between the two. The pass also
+  // blocks a concurrent retirement from returning mid-invocation.
+  const dart_callbacks::InvocationPass pass;
+  if (!pass.isLive(mDartCallbackGeneration.load(std::memory_order_acquire)))
+    return;
+  auto metadataCb = mOnMetadataCallback.load();
+  if (metadataCb != nullptr) {
     AudioMetadataFFI ffi = this->convertMetadataToFFI(metadata);
     // metadata.debug();
 #ifdef __EMSCRIPTEN__
@@ -466,7 +728,22 @@ void BufferStream::callOnMetadataCallback(AudioMetadata &metadata) {
     // `setBufferStream()` in `bindings_player_web.dart` and it's
     // meant to call the Dart callback passed to `setBufferStream()`.
     // It will pass the JS pointer to the AudioMetadata struct.
-    EM_ASM_(
+#ifdef MA_ENABLE_AUDIO_WORKLETS
+    if (!emscripten_is_main_browser_thread()) {
+      // No heap allocation on the audio thread (see gBsMetadataSlot).
+      gBsMetadataSlot = ffi;
+      emscripten_audio_worklet_post_function_sig(
+          EMSCRIPTEN_AUDIO_MAIN_THREAD, (void *)bsOnMetadataMainThread, "ii",
+          (int)(uintptr_t)&gBsMetadataSlot, (int)mParent->soundHash);
+      return;
+    }
+    bsOnMetadataMainThread((int)(uintptr_t)&ffi, (int)mParent->soundHash);
+#else
+    // Single-threaded build: everything runs on the main browser thread.
+    auto *ffiPtr = static_cast<AudioMetadataFFI *>(malloc(sizeof(ffi)));
+    if (ffiPtr == nullptr) return;
+    *ffiPtr = ffi;
+    MAIN_THREAD_ASYNC_EM_ASM(
         {
           // Compose the function name for this soundHash
           var functionName = "dartOnMetadataCallback_" + $1;
@@ -474,23 +751,51 @@ void BufferStream::callOnMetadataCallback(AudioMetadata &metadata) {
             window[functionName]($0); // Call it with the pointer
           } else {
           }
+          Module_soloud._free($0);
         },
-        &ffi, mParent->soundHash);
+        ffiPtr, mParent->soundHash);
+#endif
 #else
-    mOnMetadataCallback(ffi);
+    metadataCb(ffi);
 #endif
   }
 }
 
 void BufferStream::callOnBufferingCallback(bool isBuffering,
                                            unsigned int handle, double time) {
-  if (mOnBufferingCallback != nullptr) {
+  // Scoped around the invocation only: `mIsBuffering` below is native state
+  // and must keep tracking the stream whether or not a Dart isolate is
+  // listening.
+  {
+    // Gated, not merely null-checked: a bare load-then-call can invoke a
+    // callable whose isolate has gone away between the two. The pass also
+    // blocks a concurrent retirement from returning mid-invocation.
+    const dart_callbacks::InvocationPass pass;
+    auto bufferingCb =
+        pass.isLive(mDartCallbackGeneration.load(std::memory_order_acquire))
+            ? mOnBufferingCallback.load()
+            : nullptr;
+    if (bufferingCb != nullptr) {
 #ifdef __EMSCRIPTEN__
     // Call the Dart callback stored on globalThis, if it exists.
     // The `dartOnBufferingCallback_$hash` function is created in
     // `setBufferStream()` in `bindings_player_web.dart` and it's
     // meant to call the Dart callback passed to `setBufferStream()`.
-    EM_ASM(
+    // This event is used for this.
+#ifdef MA_ENABLE_AUDIO_WORKLETS
+    if (!emscripten_is_main_browser_thread()) {
+      // See bsOnBufferingMainThread: on the AudioWorklet rendering thread
+      // `window` does not exist. All arguments are passed by value.
+      emscripten_audio_worklet_post_function_sig(
+          EMSCRIPTEN_AUDIO_MAIN_THREAD, (void *)bsOnBufferingMainThread,
+          "iidi", (int)isBuffering, (int)handle, time,
+          (int)mParent->soundHash);
+      return;
+    }
+    bsOnBufferingMainThread((int)isBuffering, (int)handle, time,
+                            (int)mParent->soundHash);
+#else
+    MAIN_THREAD_ASYNC_EM_ASM(
         {
           // Compose the function name for this soundHash
           var functionName = "dartOnBufferingCallback_" + $3;
@@ -502,11 +807,20 @@ void BufferStream::callOnBufferingCallback(bool isBuffering,
           }
         },
         isBuffering, handle, time, mParent->soundHash);
-#else
-    mOnBufferingCallback(isBuffering, handle, time);
 #endif
+#else
+      bufferingCb(isBuffering, handle, time);
+#endif
+    }
   }
   mIsBuffering = isBuffering;
+}
+
+void BufferStream::clearDartCallbacks() {
+  mDartCallbackGeneration.store(dart_callbacks::kNoGeneration,
+                                std::memory_order_release);
+  mOnBufferingCallback.store(nullptr);
+  mOnMetadataCallback.store(nullptr);
 }
 
 BufferingType BufferStream::getBufferingType() { return mBuffer.bufferingType; }
@@ -547,6 +861,21 @@ BufferStream::convertMetadataToFFI(const AudioMetadata &metadata) {
   case BUFFER_MP3_STREAM:
     ffi.detectedType = DetectedTypeFFI::MP3_STREAM;
     break;
+  case BUFFER_WAV:
+    ffi.detectedType = DetectedTypeFFI::WAV;
+    break;
+  case BUFFER_M4A:
+    ffi.detectedType = DetectedTypeFFI::M4A;
+    break;
+  case BUFFER_AAC:
+    ffi.detectedType = DetectedTypeFFI::AAC;
+    break;
+  case BUFFER_AC3:
+    ffi.detectedType = DetectedTypeFFI::AC3;
+    break;
+  case BUFFER_EAC3:
+    ffi.detectedType = DetectedTypeFFI::EAC3;
+    break;
   default:
     ffi.detectedType = DetectedTypeFFI::UNKNOWN;
   }
@@ -556,12 +885,27 @@ BufferStream::convertMetadataToFFI(const AudioMetadata &metadata) {
           MAX_STRING_LENGTH - 1);
   strncpy(ffi.mp3Metadata.artist, metadata.mp3Metadata.artist.c_str(),
           MAX_STRING_LENGTH - 1);
+  strncpy(ffi.mp3Metadata.album_artist, metadata.mp3Metadata.albumArtist.c_str(),
+          MAX_STRING_LENGTH - 1);
   strncpy(ffi.mp3Metadata.album, metadata.mp3Metadata.album.c_str(),
           MAX_STRING_LENGTH - 1);
   strncpy(ffi.mp3Metadata.date, metadata.mp3Metadata.date.c_str(),
           MAX_STRING_LENGTH - 1);
   strncpy(ffi.mp3Metadata.genre, metadata.mp3Metadata.genre.c_str(),
           MAX_STRING_LENGTH - 1);
+  strncpy(ffi.mp3Metadata.composer, metadata.mp3Metadata.composer.c_str(),
+          MAX_STRING_LENGTH - 1);
+  strncpy(ffi.mp3Metadata.comment, metadata.mp3Metadata.comment.c_str(),
+          MAX_STRING_LENGTH - 1);
+  strncpy(ffi.mp3Metadata.track, metadata.mp3Metadata.track.c_str(),
+          MAX_STRING_LENGTH - 1);
+  strncpy(ffi.mp3Metadata.disc, metadata.mp3Metadata.disc.c_str(),
+          MAX_STRING_LENGTH - 1);
+  strncpy(ffi.mp3Metadata.stream_url, metadata.mp3Metadata.streamUrl.c_str(),
+          MAX_STRING_LENGTH - 1);
+  ffi.mp3Metadata.sample_rate = metadata.mp3Metadata.sampleRate;
+  ffi.mp3Metadata.channels = metadata.mp3Metadata.channels;
+  ffi.mp3Metadata.bitrate = metadata.mp3Metadata.bitrate;
 
   // Convert OGG metadata
   strncpy(ffi.oggMetadata.vendor, metadata.oggMetadata.vendor.c_str(),
@@ -599,7 +943,7 @@ BufferStream::convertMetadataToFFI(const AudioMetadata &metadata) {
       metadata.oggMetadata.opusInfo.mapping_family,
       metadata.oggMetadata.opusInfo.stream_count,
       metadata.oggMetadata.opusInfo.coupled_count,
-      {0}, // Initialize channel_mapping array to zeros
+      {},
       (int)metadata.oggMetadata.opusInfo.channel_mapping.size()};
 
   // Convert Flac info
@@ -612,6 +956,11 @@ BufferStream::convertMetadataToFFI(const AudioMetadata &metadata) {
                               metadata.oggMetadata.flacInfo.bits_per_sample,
                               metadata.oggMetadata.flacInfo.total_samples};
 
+  // Also populate FLAC info for raw FLAC streams
+  if (metadata.type == BUFFER_FLAC) {
+    ffi.detectedType = DetectedTypeFFI::OGG_FLAC;
+  }
+
   // Copy channel mapping
   for (size_t i = 0; i < metadata.oggMetadata.opusInfo.channel_mapping.size() &&
                      i < MAX_CHANNEL_MAPPING;
@@ -620,11 +969,89 @@ BufferStream::convertMetadataToFFI(const AudioMetadata &metadata) {
         metadata.oggMetadata.opusInfo.channel_mapping[i];
   }
 
+  // Convert AAC metadata
+  strncpy(ffi.aacMetadata.title, metadata.aacMetadata.title.c_str(),
+          MAX_STRING_LENGTH - 1);
+  strncpy(ffi.aacMetadata.artist, metadata.aacMetadata.artist.c_str(),
+          MAX_STRING_LENGTH - 1);
+  strncpy(ffi.aacMetadata.album_artist, metadata.aacMetadata.albumArtist.c_str(),
+          MAX_STRING_LENGTH - 1);
+  strncpy(ffi.aacMetadata.album, metadata.aacMetadata.album.c_str(),
+          MAX_STRING_LENGTH - 1);
+  strncpy(ffi.aacMetadata.date, metadata.aacMetadata.date.c_str(),
+          MAX_STRING_LENGTH - 1);
+  strncpy(ffi.aacMetadata.genre, metadata.aacMetadata.genre.c_str(),
+          MAX_STRING_LENGTH - 1);
+  strncpy(ffi.aacMetadata.composer, metadata.aacMetadata.composer.c_str(),
+          MAX_STRING_LENGTH - 1);
+  strncpy(ffi.aacMetadata.comment, metadata.aacMetadata.comment.c_str(),
+          MAX_STRING_LENGTH - 1);
+  strncpy(ffi.aacMetadata.track, metadata.aacMetadata.track.c_str(),
+          MAX_STRING_LENGTH - 1);
+  strncpy(ffi.aacMetadata.disc, metadata.aacMetadata.disc.c_str(),
+          MAX_STRING_LENGTH - 1);
+  strncpy(ffi.aacMetadata.stream_url, metadata.aacMetadata.streamUrl.c_str(),
+          MAX_STRING_LENGTH - 1);
+  ffi.aacMetadata.sample_rate = metadata.aacMetadata.sampleRate;
+  ffi.aacMetadata.channels = metadata.aacMetadata.channels;
+  strncpy(ffi.aacMetadata.profile, metadata.aacMetadata.profile.c_str(),
+          sizeof(ffi.aacMetadata.profile) - 1);
+  ffi.aacMetadata.bitrate = metadata.aacMetadata.bitrate;
+  ffi.aacMetadata.frame_length = metadata.aacMetadata.frameLength;
+
+  // Convert M4A metadata
+  strncpy(ffi.m4aMetadata.title, metadata.m4aMetadata.title.c_str(),
+          MAX_STRING_LENGTH - 1);
+  strncpy(ffi.m4aMetadata.artist, metadata.m4aMetadata.artist.c_str(),
+          MAX_STRING_LENGTH - 1);
+  strncpy(ffi.m4aMetadata.album_artist, metadata.m4aMetadata.albumArtist.c_str(),
+          MAX_STRING_LENGTH - 1);
+  strncpy(ffi.m4aMetadata.album, metadata.m4aMetadata.album.c_str(),
+          MAX_STRING_LENGTH - 1);
+  strncpy(ffi.m4aMetadata.date, metadata.m4aMetadata.date.c_str(),
+          MAX_STRING_LENGTH - 1);
+  strncpy(ffi.m4aMetadata.genre, metadata.m4aMetadata.genre.c_str(),
+          MAX_STRING_LENGTH - 1);
+  strncpy(ffi.m4aMetadata.composer, metadata.m4aMetadata.composer.c_str(),
+          MAX_STRING_LENGTH - 1);
+  strncpy(ffi.m4aMetadata.comment, metadata.m4aMetadata.comment.c_str(),
+          MAX_STRING_LENGTH - 1);
+  strncpy(ffi.m4aMetadata.track, metadata.m4aMetadata.track.c_str(),
+          MAX_STRING_LENGTH - 1);
+  strncpy(ffi.m4aMetadata.disc, metadata.m4aMetadata.disc.c_str(),
+          MAX_STRING_LENGTH - 1);
+  strncpy(ffi.m4aMetadata.codec, metadata.m4aMetadata.codec.c_str(),
+          sizeof(ffi.m4aMetadata.codec) - 1);
+  ffi.m4aMetadata.sample_rate = metadata.m4aMetadata.sampleRate;
+  ffi.m4aMetadata.channels = metadata.m4aMetadata.channels;
+  ffi.m4aMetadata.bitrate = metadata.m4aMetadata.bitrate;
+
+  // Convert AC3 metadata
+  ffi.ac3Metadata.sample_rate = metadata.ac3Metadata.sampleRate;
+  ffi.ac3Metadata.channels = metadata.ac3Metadata.channels;
+  ffi.ac3Metadata.bitrate = metadata.ac3Metadata.bitrate;
+  ffi.ac3Metadata.bsid = metadata.ac3Metadata.bsid;
+  ffi.ac3Metadata.bsmod = metadata.ac3Metadata.bsmod;
+  ffi.ac3Metadata.acmod = metadata.ac3Metadata.acmod;
+  ffi.ac3Metadata.lfeon = metadata.ac3Metadata.lfeOn ? 1 : 0;
+  ffi.ac3Metadata.frame_size = metadata.ac3Metadata.frameSize;
+
+  // Convert EAC3 metadata
+  ffi.eac3Metadata.sample_rate = metadata.eac3Metadata.sampleRate;
+  ffi.eac3Metadata.channels = metadata.eac3Metadata.channels;
+  ffi.eac3Metadata.bitrate = metadata.eac3Metadata.bitrate;
+  ffi.eac3Metadata.bsid = metadata.eac3Metadata.bsid;
+  ffi.eac3Metadata.stream_type = metadata.eac3Metadata.streamType;
+  ffi.eac3Metadata.substream_id = metadata.eac3Metadata.substreamId;
+  ffi.eac3Metadata.acmod = metadata.eac3Metadata.acmod;
+  ffi.eac3Metadata.lfeon = metadata.eac3Metadata.lfeOn ? 1 : 0;
+  ffi.eac3Metadata.frame_size = metadata.eac3Metadata.frameSize;
+  ffi.eac3Metadata.num_blocks = metadata.eac3Metadata.numBlocks;
+
   return ffi;
 }
 
 AudioSourceInstance *BufferStream::createInstance() {
-  mInstance = new BufferStreamInstance(this);
-  return mInstance;
+  return new BufferStreamInstance(this);
 }
 }; // namespace SoLoud

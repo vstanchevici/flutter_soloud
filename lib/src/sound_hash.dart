@@ -21,15 +21,20 @@ extension type const SoundHash._(int hash) {
   /// Constructs a valid sound hash with [hash].
   @internal
   const SoundHash(this.hash)
-      : assert(
-          hash > 0,
-          'Trying to create a valid sound hash with the value 0',
-        );
+    : assert(hash > 0, 'Trying to create a valid sound hash with the value 0');
 
   /// Constructs an invalid sound hash
   /// (for APIs that need to return _some_ hash even during errors).
   @internal
   const SoundHash.invalid() : this._(0);
+
+  /// Constructs a [SoundHash] from [hash], returning [SoundHash.invalid]
+  /// if [hash] is 0 or negative.
+  @internal
+  factory SoundHash.fromValue(int hash) {
+    if (hash <= 0) return const SoundHash.invalid();
+    return SoundHash(hash);
+  }
 
   /// Generate a "fake" [SoundHash] for generated (i.e. non-loaded) sounds.
   ///

@@ -6,7 +6,7 @@ A low-level audio plugin for Flutter.
 ||Linux|Windows|Android|MacOS|iOS|Web|
 |-|:-:|:-:|:-:|:-:|:-:|:-:|
 |Support|💙|💙|💙|💙|💙|💙|
-|Minimum Version|Any|Any|21|10.15|13.0|Any|
+|Minimum Version|Any|Any|21+|10.15+|13.0+|iOS 16.4+</br>Safari 16.4+</br>Chrome 91+</br>Edge 91+</br>Firefox 89+</br>|
 
 ## Overview
 
@@ -15,16 +15,20 @@ A high-performance audio plugin designed primarily for games and immersive appli
 ## Key Features
 
 - ⚡ Low latency, high performance audio
+- ⏱️ Sample-accurate scheduled playback: `playClocked` for sub-millisecond spaced playback regardless of buffer size, and `playScheduled` for score/manifest-style scheduling of whole batches of sounds on the engine's own clock (with optional scheduled stop/fade). Perfect for metronomes, music sequencers, rhythm games and precisely timed audio cues
 - 🎮 3D positional audio with Doppler effect
-- 🔄 Gapless looping
-- 🔄 Stream audio with auto-pause for buffering, support for PCM, MP3, Ogg with Opus, Vorbis and FLAC containers
+- 🔄 Gapless looping with half-open `[start, end)` loop regions
+- 🔄 Stream audio with auto-pause for buffering, support for PCM, MP3, WAV, FLAC, Ogg (Opus, Vorbis, FLAC), AAC (ADTS), AC-3, and E-AC-3 (Note: MP4 and M4A are not supported for streaming)
+- 📥 Pull-buffer streaming: the engine requests encoded data on demand (MP3, WAV, FLAC, Ogg Opus/Vorbis/FLAC, AAC ADTS, AC-3, E-AC-3), with seek support and callbacks for buffering, metadata, duration and data requests — ideal for network streams and custom data sources
+- 🚌 Mixing buses: group voices (music, SFX, UI...) into sub-mixes with their own volume, filters and visualization
 - 📊 Get audio wave and/or FFT audio data in real-time (useful for visualization)
-- 🎛️ Rich effects system (reverb, echo, limiter, bassboost, etc.)
-- ⚙️ Faders for attributes (e.g. fade out for 2 seconds, then stop)
-- 🎚️ Oscillators for attributes
+- 🎛️ Rich effects system (reverb, echo, limiter, parametric equalizer, pitch shift, ring modulation, etc.)
+- ⚙️ Faders for filter attributes (e.g. fade out for 2 seconds, then stop)
+- 🎚️ Oscillators for filter attributes
 - 🌊 Waveform generation and visualization
 - 🔊 Multiple voices, playing different or even the same sound multiple times
-- 🎵 Support for MP3, WAV, OGG, and FLAC
+- 🎵 Audio playback support for MP3, WAV, OGG, FLAC, plus native platform decoding for M4A, MP4 (audio tracks), AAC, AC-3, and E-AC-3
+- 🔴 Capture the master mixer output as a stream for recording, processing, or streaming (with different PCM formats and Opus, Vorbis, FLAC, WAV encoded stream formats)
 - ⏱️ Read audio data samples from a file with a given time range
 - 🌊 Generate waveforms in real-time with various types (sine, square, saw, triangle, etc.)
 
@@ -34,10 +38,47 @@ A high-performance audio plugin designed primarily for games and immersive appli
 
 If you are looking for a package to visualize audio using shaders or CustomPainter, please check out [audio_flux](https://pub.dev/packages/audio_flux). It uses this plugin for output and [flutter_recorder](https://pub.dev/packages/flutter_recorder) for input.
 
+If you are working with MIDI or SoundFont files (SF2/SF3/SFZ), check out [soundfont_kit](https://pub.dev/packages/soundfont_kit)—a companion package that is very helpful for musicians and game developers looking to synthesize instrument audio using SoundFonts with `flutter_soloud`.
+
+The native code is built with [Dart build hooks](https://dart.dev/tools/hooks): no CMake, CocoaPods script phases, or SPM configuration is needed — it works the same whether your app uses CocoaPods or Swift Package Manager.
+
+By default, Xiph audio codecs (Ogg, Vorbis, Opus, FLAC) are linked and bundled from tested prebuilt libraries (`xiph/prebuild/<platform>/`), ensuring that packaged apps (Android AAB/APK, iOS IPA, macOS APP, Windows EXE) work out of the box with zero external build dependencies. You can also configure:
+- **System libraries**: Set `<platform>_use_system_libs: true` (e.g. `linux_use_system_libs: true`) to link system packages.
+- **Force source build**: Set `<platform>_force_build_libs: true` to clone and compile from source via CMake.
+- **Without Xiph mode**: Set `no_xiph_libs: true` to exclude Xiph codecs and shrink binary size.
+
+For complete setup instructions and Windows download links, see the [Xiph Libraries & Codecs Guide](https://docs.page/alnitak/flutter_soloud_docs/get_started/xiph_libs).
+
+### Extended Audio Formats (M4A, MP4, AAC, AC-3, E-AC-3)
+
+In addition to core cross-platform formats (MP3, WAV, FLAC, OGG), `flutter_soloud` supports native decoding for **M4A**, **MP4** (audio tracks), **AAC**, **AC-3** (Dolby Digital), and **E-AC-3** (Dolby Digital Plus):
+- **Windows**: Decoded natively via Windows Media Foundation (supporting file/memory playback as well as real-time chunk streaming via Media Foundation Transform).
+- **Linux**: Decoded via system FFmpeg shared libraries (`libavcodec` and `libavformat`) loaded dynamically at runtime (`sudo apt install ffmpeg libavcodec-extra` on Debian/Ubuntu, `sudo pacman -S ffmpeg` on Arch, `sudo dnf install ffmpeg-free` on Fedora).
+- **macOS / iOS**: Decoded natively via Apple AudioToolbox.
+- **Android**: Decoded natively via Android NDK MediaCodec.
+- **Web**: Supports M4A, MP4, AAC, and core formats via WebCodecs / Web Audio *(Note: AC-3 and E-AC-3 are not supported on Web in any browser)*.
+- **Streaming & Buffering**: Both push buffer (`setBufferStream`) and pull buffer (`setPullBufferStream`) in `BufferingType.released` and `BufferingType.preserved` modes support AAC (ADTS), AC-3, and E-AC-3 with automatic stream and metadata parsing (sample rates, channels, bitrates, ID3 tags, and ICY metadata). *(Note: MP4 and M4A containers are not supported for streaming; use file, asset, or memory loading instead).*
+
 ## Documentation
 
 - [Full Documentation](https://docs.page/alnitak/flutter_soloud_docs)
 - [API Reference](https://pub.dev/documentation/flutter_soloud/latest/)
+
+## AI Agent Skills
+
+`flutter_soloud` includes bundled **Agent Skills** (`SKILL.md` instruction files) to help AI coding agents (Claude, Cursor, Gemini, GitHub Copilot, Cline, Codex, OpenCode, etc.) generate correct, high-performance code for all features of this audio engine.
+
+Install or update the skills in your project by running:
+
+```bash
+dart run flutter_soloud:skills
+```
+
+To check whether installed skills are up to date without modifying any files:
+
+```bash
+dart run flutter_soloud:skills --check
+```
 
 ## Simple Example
 
@@ -46,14 +87,33 @@ void example() async {
   final soloud = SoLoud.instance;
   await soloud.init();
 
-  final source = await soloud.loadAsset('assets/sound.mp3');
-  final handle = await soloud.play(source);
+  await soloud.playSource(asset: 'assets/sound.mp3');
+  // or
+  final sound = await soloud.loadAsset('assets/sound.mp3');
+  final handle = soloud.play(sound);
   
-  // Later...
-  await soloud.stop(handle);
-  await soloud.disposeSource(source);  
+  [...]
+  await soloud.deinit();
 }
 ```
+
+## Apps & Games Using flutter_soloud
+
+A showcase of apps and games built with this plugin:
+
+| App/Game | Developer | Description |
+|----------|-----------|-------------|
+| GPhil</br>[web](https://app.g-phil.app/) [MacOS](https://apps.apple.com/it/app/gphil/id6740543718) [Windows](https://apps.microsoft.com/detail/9pkkz2p2dldg?ocid=webpdpshare)| Vyacheslav Gryaznov | Innovative app designed for musicians to play instrumental concertos with flexible virtual orchestral accompaniment.|
+| [Forcebar](https://forcebar.xyz) | Doug Todd | Forcebar is a pure reflex game. |
+| [RadioVisualizer](https://radiovisualizer.com) | Marco Bavagnoli | Stream over 35,000 live radio stations from every corner of the globe. |
+| Stellar Bastion</br>[web](https://www.crazygames.com/game/stellar-bastion) [Android](https://play.google.com/store/apps/details?id=com.coconutisland.stellar_bastion) [iOS](https://apps.apple.com/us/app/stellar-bastion/id6761073618) | Coconut Island Apps | 2D Tower Defense game. |
+| Mortigen</br>[web](https://koldo92.github.io/mortigen/) [Android](https://play.google.com/store/apps/details?id=com.ler.mortigen) [iOS](https://apps.apple.com/us/app/mortigen/id6761758806) | Luis Enrique Ruiz | Roguelite survival shooter. |
+| SUMOJI</br>[web](https://straspool.eu/sumoji/) [Android](https://play.google.com/store/apps/details?id=eu.straspool.sumoji) [iOS](https://apps.apple.com/us/app/sumoji/id6751641875) | Valentin Martinet | Fun Emoji-based Sudoku. |
+| GuanDan</br>[web](https://guandan.app/) [MacOS](https://apps.apple.com/us/app/%E6%8E%BC%E8%9B%8B-guandan/id6757966323) [Windows](https://apps.microsoft.com/detail/9pbv1xp2lc50) [Android](https://play.google.com/store/apps/details?id=org.rockstudio.guandan) [iOS](https://apps.apple.com/us/app/%E6%8E%BC%E8%9B%8B-guandan/id6757966323) | [yangyuan](https://github.com/yangyuan) | GuanDan (掼蛋) is a popular four-player Chinese card game. |
+| DeReMi Piano: Play & Learn</br>[Android](https://play.google.com/store/apps/details?id=com.gen.kidspiano) | Gent Mecaj | A piano learning app. |
+| Brickmatic</br>[Android](https://play.google.com/store/apps/details?id=dev.oxcraftgame.brickmatic) [iOS](https://apps.apple.com/us/app/brickmatic-brick-game/id6805551637) | [KonstantinKai](https://github.com/KonstantinKai) | A close recreation of the 9999-in-1 handheld brick game console: twelve games on one dot matrix. |
+
+*Want to add your app? Feel free to open a PR!*
 
 ## License
 
